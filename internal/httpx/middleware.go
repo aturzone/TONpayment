@@ -94,10 +94,12 @@ func cors(allowed []string) func(http.Handler) http.Handler {
 // distributed coordination — which is correct for a single instance and a sane
 // first line of defence behind a reverse proxy.
 type rateLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*bucket
-	rate    float64 // tokens per second
-	burst   float64
+	mu         sync.Mutex
+	buckets    map[string]*bucket
+	rate       float64 // tokens per second
+	burst      float64
+	trustProxy bool
+	lastSweep  time.Time
 }
 
 type bucket struct {
@@ -105,14 +107,15 @@ type bucket struct {
 	last   time.Time
 }
 
-func newRateLimiter(ratePerSec, burst float64) *rateLimiter {
-	return &rateLimiter{buckets: map[string]*bucket{}, rate: ratePerSec, burst: burst}
+func newRateLimiter(ratePerSec, burst float64, trustProxy bool) *rateLimiter {
+	return &rateLimiter{buckets: map[string]*bucket{}, rate: ratePerSec, burst: burst, trustProxy: trustProxy}
 }
 
 func (rl *rateLimiter) allow(key string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	now := time.Now()
+	rl.sweep(now)
 	b, ok := rl.buckets[key]
 	if !ok {
 		rl.buckets[key] = &bucket{tokens: rl.burst - 1, last: now}
@@ -130,9 +133,24 @@ func (rl *rateLimiter) allow(key string) bool {
 	return true
 }
 
+// sweep drops buckets that have fully refilled to burst — they carry no state a
+// fresh key wouldn't get — bounding memory under a churn of distinct (or spoofed)
+// client IPs. Runs at most once a minute. Callers must hold the lock.
+func (rl *rateLimiter) sweep(now time.Time) {
+	if now.Sub(rl.lastSweep) < time.Minute {
+		return
+	}
+	rl.lastSweep = now
+	for k, b := range rl.buckets {
+		if b.tokens+now.Sub(b.last).Seconds()*rl.rate >= rl.burst {
+			delete(rl.buckets, k)
+		}
+	}
+}
+
 func (rl *rateLimiter) wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !rl.allow(clientIP(r)) {
+		if !rl.allow(clientIP(r, rl.trustProxy)) {
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded; slow down")
 			return
 		}
@@ -140,15 +158,19 @@ func (rl *rateLimiter) wrap(next http.Handler) http.Handler {
 	})
 }
 
-// clientIP returns a best-effort client IP for rate-limit keying. Behind a
-// reverse proxy the left-most X-Forwarded-For entry is used; otherwise the
-// connection's remote address.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
+// clientIP returns a best-effort client IP for rate-limit keying. The
+// X-Forwarded-For header is only honored when trustProxy is set (TON_TRUST_PROXY),
+// because a directly-reachable server must not let any client forge the header to
+// mint a fresh rate-limit bucket per request; otherwise the connection's remote
+// address is used.
+func clientIP(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if i := strings.IndexByte(xff, ','); i >= 0 {
+				return strings.TrimSpace(xff[:i])
+			}
+			return strings.TrimSpace(xff)
 		}
-		return strings.TrimSpace(xff)
 	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host

@@ -6,12 +6,24 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/aturzone/TONpayment/internal/idgen"
 	"github.com/aturzone/TONpayment/internal/store"
 	"github.com/aturzone/TONpayment/internal/wallet"
+)
+
+const (
+	// MaxTTL bounds how long an invoice may stay pending, so a caller cannot mint
+	// effectively immortal invoices that the poller re-checks (and bills toncenter
+	// for) forever.
+	MaxTTL = 7 * 24 * time.Hour
+	// metadata bounds: the caller's reference is opaque, but it is stored and
+	// echoed on every read/webhook, so keep it small.
+	maxMetadataKeys  = 64
+	maxMetadataBytes = 8 * 1024
 )
 
 // Webhook is the optional sink notified when an invoice settles. It is an
@@ -75,8 +87,14 @@ func (s *Service) CreateInvoice(amountNano int64, ttl time.Duration, metadata ma
 	if s.payTo == "" {
 		return store.Invoice{}, errors.New("no receiving address configured (set TON_RECEIVING_ADDRESS)")
 	}
+	if err := validateMetadata(metadata); err != nil {
+		return store.Invoice{}, err
+	}
 	if ttl <= 0 {
 		ttl = s.defaultTTL
+	}
+	if ttl > MaxTTL {
+		ttl = MaxTTL
 	}
 	now := time.Now().UTC()
 	inv := store.Invoice{
@@ -98,6 +116,20 @@ func (s *Service) CreateInvoice(amountNano int64, ttl time.Duration, metadata ma
 
 // Get returns an invoice without touching the chain.
 func (s *Service) Get(id string) (store.Invoice, bool) { return s.st.GetInvoice(id) }
+
+func validateMetadata(md map[string]string) error {
+	if len(md) > maxMetadataKeys {
+		return fmt.Errorf("metadata has too many keys (max %d)", maxMetadataKeys)
+	}
+	total := 0
+	for k, v := range md {
+		total += len(k) + len(v)
+	}
+	if total > maxMetadataBytes {
+		return fmt.Errorf("metadata too large: %d bytes (max %d)", total, maxMetadataBytes)
+	}
+	return nil
+}
 
 // ListPending exposes the store's pending set for the background poller.
 func (s *Service) ListPending() []store.Invoice { return s.st.ListPending() }

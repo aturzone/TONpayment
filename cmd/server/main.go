@@ -44,19 +44,23 @@ func main() {
 		log.Printf("store: in-memory/json dir=%s", cfg.DataDir)
 	}
 
-	// Verifier selection: the real toncenter verifier in prod once a receiving
-	// address is set; otherwise a mock that auto-confirms after a couple of polls
-	// so the create -> pending -> paid flow can be exercised without real funds.
+	// Verifier selection. Production ALWAYS uses the real toncenter verifier and
+	// REQUIRES a receiving address — we must never fall back to the mock (which
+	// auto-confirms payments) in prod. Dev uses the mock so the create -> pending
+	// -> paid flow can be exercised without real funds.
 	var ver wallet.Verifier
-	if cfg.IsProd() && cfg.TONReceiving != "" {
+	if cfg.IsProd() {
+		if cfg.TONReceiving == "" {
+			log.Fatalf("config: TON_RECEIVING_ADDRESS is required when TON_ENV=prod")
+		}
 		ver = wallet.NewTonVerifier(cfg.TONAPIBase, cfg.TONAPIKey, nil)
 		log.Printf("payments: toncenter verifier (%s)", cfg.TONAPIBase)
 	} else {
 		ver = wallet.NewMockVerifier(2)
-		log.Printf("payments: MOCK verifier (dev; auto-confirms after 2 polls)")
-	}
-	if cfg.TONReceiving == "" {
-		log.Printf("WARNING: TON_RECEIVING_ADDRESS not set; invoices cannot be created until it is.")
+		log.Printf("payments: MOCK verifier (dev; auto-confirms after 2 polls — NEVER used in prod)")
+		if cfg.TONReceiving == "" {
+			log.Printf("WARNING: TON_RECEIVING_ADDRESS not set; invoices cannot be created until it is.")
+		}
 	}
 
 	// Optional signed webhook on settlement.

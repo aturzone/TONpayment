@@ -55,6 +55,11 @@ func (v *TonVerifier) Verify(inv store.Invoice) (bool, string, error) {
 	if inv.PayTo == "" {
 		return false, "", errors.New("invoice has no receiving address")
 	}
+	if inv.Memo == "" {
+		// Defensive: an empty memo would match any plain (no-comment) transfer.
+		// NewMemo always produces a non-empty memo, so this only catches corruption.
+		return false, "", errors.New("invoice has no memo")
+	}
 	u := fmt.Sprintf("%s/getTransactions?address=%s&limit=30&archival=true",
 		strings.TrimRight(v.apiBase, "/"), url.QueryEscape(inv.PayTo))
 	if v.apiKey != "" {
@@ -80,7 +85,10 @@ func (v *TonVerifier) Verify(inv store.Invoice) (bool, string, error) {
 	// masterchain block — TON has deterministic finality, so there is no probabilistic
 	// "0-conf" reorg to wait out. The comment is public and unauthenticated, so we
 	// require the exact memo AND a sufficient amount to the receiving address (the
-	// query target) — that triple is the real protection.
+	// query target) — that triple is the real protection. The address leg is enforced
+	// by toncenter scoping results to the queried address (every in_msg here is a
+	// message TO inv.PayTo); the memo+amount match then binds the payment to THIS
+	// invoice. See SECURITY.md.
 	for _, tx := range body.Result {
 		if tx.InMsg.Message != inv.Memo {
 			continue

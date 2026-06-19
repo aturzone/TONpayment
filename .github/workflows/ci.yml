@@ -8,12 +8,35 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ton
+          POSTGRES_PASSWORD: ton
+          POSTGRES_DB: tonpayment_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ton"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; echo 'run gofmt'; exit 1; }
       - run: go build ./...
       - run: go vet ./...
-      - run: go test ./...
+      - name: test (race + Postgres integration)
+        run: go test -race ./...
+        env:
+          # Exercises the durable store (internal/store/postgres_test.go).
+          TON_TEST_DATABASE_URL: postgres://ton:ton@localhost:5432/tonpayment_test?sslmode=disable

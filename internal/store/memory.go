@@ -79,7 +79,11 @@ func (m *Memory) CreateInvoice(inv Invoice) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.invoices[inv.ID] = inv
-	return m.persist()
+	if err := m.persist(); err != nil {
+		delete(m.invoices, inv.ID) // roll back so memory and disk agree
+		return err
+	}
+	return nil
 }
 
 func (m *Memory) GetInvoice(id string) (Invoice, bool) {
@@ -116,25 +120,35 @@ func (m *Memory) ListPending() []Invoice {
 func (m *Memory) ClaimInvoiceForSettlement(id, txHash string, paidAt time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	inv, ok := m.invoices[id]
-	if !ok || inv.Status != StatusPending {
+	cur, ok := m.invoices[id]
+	if !ok || cur.Status != StatusPending {
 		return false, nil
 	}
-	inv.Status = StatusPaid
-	inv.TxHash = txHash
-	inv.PaidAt = paidAt
-	m.invoices[id] = inv
-	return true, m.persist()
+	updated := cur
+	updated.Status = StatusPaid
+	updated.TxHash = txHash
+	updated.PaidAt = paidAt
+	m.invoices[id] = updated
+	if err := m.persist(); err != nil {
+		m.invoices[id] = cur // roll back: don't report a claim we couldn't durably write
+		return false, err
+	}
+	return true, nil
 }
 
 func (m *Memory) ExpireInvoice(id string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	inv, ok := m.invoices[id]
-	if !ok || inv.Status != StatusPending {
+	cur, ok := m.invoices[id]
+	if !ok || cur.Status != StatusPending {
 		return false, nil
 	}
-	inv.Status = StatusExpired
-	m.invoices[id] = inv
-	return true, m.persist()
+	updated := cur
+	updated.Status = StatusExpired
+	m.invoices[id] = updated
+	if err := m.persist(); err != nil {
+		m.invoices[id] = cur // roll back
+		return false, err
+	}
+	return true, nil
 }

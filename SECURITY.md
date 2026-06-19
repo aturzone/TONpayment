@@ -35,6 +35,28 @@ A transaction returned by toncenter `getTransactions(archival)` is already in a
 committed masterchain block. TON has deterministic finality, so there is no
 probabilistic "0-conf" reorg window to wait out.
 
+## Verification scope (known limitation)
+
+The verifier reads the receiving address's most recent **~30 incoming
+transactions** from toncenter and matches by memo + amount. On a high-traffic
+*shared* receiving address, a genuine payment could be pushed out of that window
+before it is observed. Because each memo is unique per invoice, this can only ever
+cause a **missed** match (the invoice stays `pending`), never a wrong or duplicate
+credit. Mitigate by polling frequently and/or using a dedicated receiving address
+per integration.
+
+## Webhooks
+
+Webhook delivery is **best-effort** (retried with backoff) and can be lost if the
+process crashes mid-delivery. Always verify the `X-Signature` HMAC, and treat the
+invoice status from the API as authoritative before doing anything irreversible.
+
+## Data exposure
+
+An invoice's `metadata` is echoed on every read (`GET /v1/invoices/{id}` and
+`/status`) and in webhooks. The invoice ID is an unguessable random token, but you
+should still **never store secrets in metadata**.
+
 ## Secrets
 
 - **No secrets are committed.** `.env` is gitignored; only `.env.example` ships.

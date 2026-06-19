@@ -1,5 +1,9 @@
 # TONpayment
 
+[![CI](https://github.com/aturzone/TONpayment/actions/workflows/ci.yml/badge.svg)](https://github.com/aturzone/TONpayment/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Go](https://img.shields.io/github/go-mod/go-version/aturzone/TONpayment)
+
 A small, **non-custodial, watch-only** TON payment service in Go. It issues
 invoices, watches the TON blockchain, and confirms payment — without ever
 holding keys or moving funds.
@@ -101,7 +105,7 @@ Request body:
 |--------------|-------------------|----------|--------------------------------------------------|
 | `amountNano` | integer           | yes      | amount in **nanoTON** (1 TON = 1e9). Must be > 0. |
 | `ttlSeconds` | integer           | no       | invoice lifetime; defaults to `TON_DEFAULT_TTL_SECONDS`. |
-| `metadata`   | object (str→str)  | no       | your own reference (orderId, userId, …); echoed back, opaque to the service. |
+| `metadata`   | object (str→str)  | no       | your own reference (orderId, userId, …); opaque to the service. **Returned on every read — don't put secrets here.** Capped at 64 keys / 8 KB. |
 
 Returns `201` with the invoice:
 
@@ -153,8 +157,9 @@ All configuration is via `TON_*` environment variables (see
 | Variable                    | Default                          | Description                                                        |
 |-----------------------------|----------------------------------|--------------------------------------------------------------------|
 | `TON_HTTP_ADDR`             | `:8080`                          | Listen address. `PORT` is also honored (for PaaS).                 |
-| `TON_ENV`                   | `dev`                            | `dev` (mock verifier) or `prod` (toncenter verifier).             |
+| `TON_ENV`                   | `dev`                            | `dev` (mock verifier) or `prod` (toncenter verifier; requires address). |
 | `TON_ALLOWED_ORIGINS`       | `http://localhost:5173,…:4173`   | Comma-separated CORS allow-list.                                   |
+| `TON_TRUST_PROXY`           | `false`                          | Trust `X-Forwarded-For` for rate-limit keying (only behind a proxy). |
 | `TON_RECEIVING_ADDRESS`     | *(empty)*                        | **Required to create invoices.** The watch-only receiving address. |
 | `TON_API_BASE`              | `https://toncenter.com/api/v2`   | toncenter v2 API base URL.                                         |
 | `TON_API_KEY`               | *(empty)*                        | Optional toncenter key (raises rate limit above ~1 req/s).         |
@@ -211,7 +216,11 @@ docker compose --profile postgres up --build
 #   then uncomment TON_DATABASE_URL in docker-compose.yml
 ```
 
-The image is a multi-stage static build on Alpine with a `/healthz` healthcheck.
+The image defaults to `TON_ENV=prod`, so you **must** provide
+`TON_RECEIVING_ADDRESS` (e.g. `export TON_RECEIVING_ADDRESS=UQ...` before
+`docker compose up`, or set it in your environment) — otherwise the container
+exits with a clear error. The image is a multi-stage static build on Alpine with a
+`/healthz` healthcheck.
 
 ## Deploy notes
 
@@ -224,6 +233,24 @@ The image is a multi-stage static build on Alpine with a `/healthz` healthcheck.
   consider setting `TON_CREATE_API_KEY` so only your backend can mint invoices.
 - The webhook is best-effort; treat `GET /status` as the source of truth before
   doing anything irreversible.
+
+## Limitations & operational notes
+
+- **Verification scope.** The verifier checks the **most recent ~30 incoming
+  transactions** of the receiving address (toncenter `getTransactions`). On a busy
+  *shared* address, a payment could scroll out of that window before it's seen.
+  Mitigation: keep the poll interval short, and/or use a **dedicated receiving
+  address** per integration. The memo is unique per invoice, so funds are never
+  misattributed — the risk is a missed (not a wrong) match.
+- **Webhooks are best-effort.** They are retried with backoff but can be lost if
+  the process crashes mid-delivery. Treat `GET /v1/invoices/{id}/status` (or the
+  poller-updated state) as the source of truth before doing anything irreversible,
+  and always verify the `X-Signature`.
+- **Mock verifier is dev-only.** With `TON_ENV=prod` the service uses the real
+  toncenter verifier and refuses to start without `TON_RECEIVING_ADDRESS`; it never
+  falls back to the auto-confirming mock in prod.
+- **Single-instance JSON store.** The in-memory/JSON store rewrites the whole file
+  per change and keeps terminal invoices; use Postgres for production scale.
 
 ## Development
 

@@ -22,7 +22,7 @@ type api struct {
 
 // NewServer builds the configured *http.Server.
 func NewServer(s Services) *http.Server {
-	a := &api{s: s, limiter: newRateLimiter(5, 40)}
+	a := &api{s: s, limiter: newRateLimiter(5, 40, s.Cfg.TrustProxy)}
 
 	mux := http.NewServeMux()
 	a.routes(mux)
@@ -54,7 +54,7 @@ func (a *api) routes(mux *http.ServeMux) {
 	mux.Handle("POST /v1/invoices", a.limiter.wrap(http.HandlerFunc(a.createInvoice)))
 	mux.HandleFunc("GET /v1/invoices/{id}", a.getInvoice)
 	mux.Handle("GET /v1/invoices/{id}/status", a.limiter.wrap(http.HandlerFunc(a.invoiceStatus)))
-	mux.HandleFunc("GET /v1/invoices/{id}/qr", a.invoiceQR)
+	mux.Handle("GET /v1/invoices/{id}/qr", a.limiter.wrap(http.HandlerFunc(a.invoiceQR)))
 }
 
 func (a *api) healthz(w http.ResponseWriter, r *http.Request) {

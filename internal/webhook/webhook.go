@@ -28,6 +28,7 @@ type Sender struct {
 	secret  []byte
 	http    *http.Client
 	retries int
+	sem     chan struct{} // bounds concurrent deliveries
 	wg      sync.WaitGroup
 }
 
@@ -40,7 +41,7 @@ func New(url, secret string, client *http.Client) *Sender {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
-	return &Sender{url: url, secret: []byte(secret), http: client, retries: 5}
+	return &Sender{url: url, secret: []byte(secret), http: client, retries: 5, sem: make(chan struct{}, 32)}
 }
 
 // Fire delivers the invoice asynchronously. Safe to call on a hot path and safe
@@ -57,6 +58,9 @@ func (s *Sender) Fire(inv store.Invoice) {
 }
 
 func (s *Sender) deliver(inv store.Invoice) {
+	s.sem <- struct{}{} // cap concurrent outbound deliveries
+	defer func() { <-s.sem }()
+
 	body, err := json.Marshal(inv)
 	if err != nil {
 		log.Printf("webhook: marshal invoice %s: %v", inv.ID, err)

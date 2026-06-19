@@ -1,0 +1,50 @@
+name: Bug report
+description: Report a problem with TONpayment
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! **Do not include secrets** (API keys, webhook secrets, full env files).
+        For security vulnerabilities, please use a private advisory instead — see SECURITY.md.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Include the request(s) made and the response(s) seen.
+      placeholder: |
+        1. POST /v1/invoices with ...
+        2. GET /v1/invoices/{id}/status
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Git commit SHA or release tag.
+    validations:
+      required: false
+  - type: dropdown
+    id: store
+    attributes:
+      label: Store
+      options:
+        - in-memory/JSON
+        - Postgres
+    validations:
+      required: false
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Go version, dev vs prod, behind a proxy? (Redact secrets.)
+    validations:
+      required: false

@@ -3,8 +3,11 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -112,6 +115,9 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 func (p *Postgres) GetInvoice(id string) (Invoice, bool) {
 	inv, err := scanInvoice(p.pool.QueryRow(bg(), `SELECT `+invoiceCols+` FROM invoices WHERE id=$1`, id))
 	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			log.Printf("store: GetInvoice %s: %v", id, err) // a real DB error, not just "not found"
+		}
 		return Invoice{}, false
 	}
 	return inv, true
@@ -120,6 +126,7 @@ func (p *Postgres) GetInvoice(id string) (Invoice, bool) {
 func (p *Postgres) ListInvoices() []Invoice {
 	rows, err := p.pool.Query(bg(), `SELECT `+invoiceCols+` FROM invoices ORDER BY created_at DESC`)
 	if err != nil {
+		log.Printf("store: ListInvoices: %v", err)
 		return nil
 	}
 	defer rows.Close()
@@ -135,6 +142,7 @@ func (p *Postgres) ListInvoices() []Invoice {
 func (p *Postgres) ListPending() []Invoice {
 	rows, err := p.pool.Query(bg(), `SELECT `+invoiceCols+` FROM invoices WHERE status='pending' ORDER BY created_at`)
 	if err != nil {
+		log.Printf("store: ListPending: %v", err)
 		return nil
 	}
 	defer rows.Close()

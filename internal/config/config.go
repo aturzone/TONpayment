@@ -19,6 +19,10 @@ type Config struct {
 	DatabaseURL string
 	DataDir     string
 
+	// TrustProxy: honor X-Forwarded-For for client-IP (rate-limit) keying. Only
+	// enable when actually behind a trusted reverse proxy.
+	TrustProxy bool
+
 	// Payments (all public, safe values).
 	TONReceiving string
 	TONAPIBase   string
@@ -47,6 +51,7 @@ func Load() *Config {
 		Env:             getenv("TON_ENV", "dev"),
 		DatabaseURL:     os.Getenv("TON_DATABASE_URL"),
 		DataDir:         getenv("TON_DATA_DIR", "data"),
+		TrustProxy:      boolDef(os.Getenv("TON_TRUST_PROXY"), false),
 		TONReceiving:    os.Getenv("TON_RECEIVING_ADDRESS"),
 		TONAPIBase:      getenv("TON_API_BASE", "https://toncenter.com/api/v2"),
 		TONAPIKey:       os.Getenv("TON_API_KEY"),
