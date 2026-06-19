@@ -1,0 +1,32 @@
+# Default: `docker compose up` runs the service with the in-memory/JSON store.
+# Postgres:  `docker compose --profile postgres up`  (then uncomment TON_DATABASE_URL).
+services:
+  tonpayment:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      TON_ENV: prod
+      TON_RECEIVING_ADDRESS: ${TON_RECEIVING_ADDRESS:-}
+      TON_API_BASE: https://toncenter.com/api/v2
+      TON_API_KEY: ${TON_API_KEY:-}
+      TON_CREATE_API_KEY: ${TON_CREATE_API_KEY:-}
+      TON_WEBHOOK_URL: ${TON_WEBHOOK_URL:-}
+      TON_WEBHOOK_SECRET: ${TON_WEBHOOK_SECRET:-}
+      # To use Postgres, start with `--profile postgres` and uncomment:
+      # TON_DATABASE_URL: postgres://ton:ton@db:5432/tonpayment?sslmode=disable
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: ton
+      POSTGRES_PASSWORD: ton
+      POSTGRES_DB: tonpayment
+    volumes:
+      - tonpg:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  tonpg:

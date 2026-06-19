@@ -1,0 +1,12 @@
+.git
+.github
+bin
+data
+.env
+.env.*
+!.env.example
+*.exe
+*.test
+README.md
+SECURITY.md
+LICENSE

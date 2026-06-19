@@ -1,0 +1,21 @@
+# Binaries
+/bin/
+/server
+/tonpayment
+*.exe
+*.test
+
+# Local runtime data (in-memory/JSON store) and secrets
+/data/
+.env
+.env.*
+!.env.example
+
+# Go tooling output
+*.out
+coverage.*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
