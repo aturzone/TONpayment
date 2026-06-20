@@ -43,8 +43,9 @@ Requires Go 1.26+.
 git clone git@github.com:aturzone/TONpayment.git
 cd TONpayment
 
-# A receiving address is required to create invoices. In dev (TON_ENV=dev) the
-# verifier is a MOCK that auto-confirms after 2 status checks — no real funds.
+# A receiving address is needed to create invoices — set a default here, or pass
+# "payTo" per request. In dev (TON_ENV=dev) the verifier is a MOCK that
+# auto-confirms after 2 status checks — no real funds.
 export TON_RECEIVING_ADDRESS="UQ...your_address..."
 export TON_ENV=dev
 
@@ -67,8 +68,11 @@ curl -s localhost:8080/v1/invoices/<id>/status   # status: pending
 curl -s localhost:8080/v1/invoices/<id>/status   # status: paid ✅
 ```
 
-In production set `TON_ENV=prod` with a real `TON_RECEIVING_ADDRESS`; the service
-then uses the real toncenter verifier.
+In production set `TON_ENV=prod`; the service then uses the real toncenter
+verifier. Provide a receiving address either as a default (`TON_RECEIVING_ADDRESS`)
+or per request (`payTo` in the create body). To avoid running an open,
+arbitrary-address invoice minter, prod requires **either** a default address
+**or** `TON_CREATE_API_KEY` (to gate creation) — it refuses to start with neither.
 
 ## How a payer pays
 
@@ -92,7 +96,9 @@ the webhook) and reacts when `status` becomes `paid`.
 ## API
 
 Base path `/v1`. All responses are JSON except the QR (PNG). CORS origins are
-configurable; errors are `{ "error": "message" }`.
+configurable; errors are `{ "error": "message" }`. A machine-readable
+[OpenAPI spec](api/openapi.yaml) is the source of truth for clients — generate
+typed SDKs (web, mobile) from it.
 
 ### `POST /v1/invoices` — create an invoice
 
@@ -103,6 +109,7 @@ Request body:
 
 | field        | type              | required | notes                                            |
 |--------------|-------------------|----------|--------------------------------------------------|
+| `payTo`      | string            | no\*     | receiving TON address for **this** invoice (raw `0:…` or user-friendly `EQ…`/`UQ…`). Validated + canonicalized. \*Required only if the server has no default `TON_RECEIVING_ADDRESS`. |
 | `amountNano` | integer           | yes      | amount in **nanoTON** (1 TON = 1e9). Must be > 0. |
 | `ttlSeconds` | integer           | no       | invoice lifetime; defaults to `TON_DEFAULT_TTL_SECONDS`. |
 | `metadata`   | object (str→str)  | no       | your own reference (orderId, userId, …); opaque to the service. **Returned on every read — don't put secrets here.** Capped at 64 keys / 8 KB. |
@@ -160,13 +167,16 @@ All configuration is via `TON_*` environment variables (see
 | `TON_ENV`                   | `dev`                            | `dev` (mock verifier) or `prod` (toncenter verifier; requires address). |
 | `TON_ALLOWED_ORIGINS`       | `http://localhost:5173,…:4173`   | Comma-separated CORS allow-list.                                   |
 | `TON_TRUST_PROXY`           | `false`                          | Trust `X-Forwarded-For` for rate-limit keying (only behind a proxy). |
-| `TON_RECEIVING_ADDRESS`     | *(empty)*                        | **Required to create invoices.** The watch-only receiving address. |
+| `TON_RECEIVING_ADDRESS`     | *(empty)*                        | **Default** watch-only receiving address. Optional: invoices may instead supply `payTo` per request. Validated + canonicalized at startup. |
 | `TON_API_BASE`              | `https://toncenter.com/api/v2`   | toncenter v2 API base URL.                                         |
 | `TON_API_KEY`               | *(empty)*                        | Optional toncenter key (raises rate limit above ~1 req/s).         |
 | `TON_DATABASE_URL`          | *(empty)*                        | If set, use Postgres; otherwise in-memory/JSON.                    |
 | `TON_DATA_DIR`              | `data`                           | Directory for the JSON store (when not using Postgres).            |
 | `TON_DEFAULT_TTL_SECONDS`   | `900`                            | Default invoice lifetime when a request omits `ttlSeconds`.        |
 | `TON_CREATE_API_KEY`        | *(empty)*                        | If set, `POST /v1/invoices` requires this key.                     |
+| `TON_MAX_TTL_SECONDS`       | `86400`                          | Hard cap on invoice lifetime (default 24h).                       |
+| `TON_MAX_PENDING`           | `10000`                          | Cap on total pending invoices (`0` = unlimited).                  |
+| `TON_MAX_PENDING_PER_ADDRESS`| `200`                           | Cap on pending invoices per receiving address (`0` = unlimited).  |
 | `TON_POLL_ENABLED`          | `true`                           | Run the background settle/expire poller.                           |
 | `TON_POLL_INTERVAL_SECONDS` | `10`                             | Poller interval.                                                   |
 | `TON_POLL_CONCURRENCY`      | `4`                              | Max concurrent verifications per poll tick.                        |
@@ -224,7 +234,8 @@ exits with a clear error. The image is a multi-stage static build on Alpine with
 
 ## Deploy notes
 
-- Set `TON_ENV=prod` and a real `TON_RECEIVING_ADDRESS`.
+- Set `TON_ENV=prod` and provide a receiving address (default `TON_RECEIVING_ADDRESS`
+  and/or per-request `payTo`). In multi-tenant mode (no default), set `TON_CREATE_API_KEY`.
 - Set `TON_API_KEY` to avoid toncenter's anonymous rate limit.
 - Use Postgres (`TON_DATABASE_URL`) for anything beyond a single ephemeral
   instance. The in-process per-invoice lock makes settlement atomic *within* one
@@ -274,6 +285,7 @@ cmd/server          entrypoint: wiring, verifier selection, poller, shutdown
 internal/money      nanoTON integer math
 internal/idgen      short random IDs
 internal/store      Invoice type + Store interface; in-memory/JSON + Postgres
+internal/tonaddr    TON address parse/validate/normalize (CRC-16 checksum)
 internal/wallet     Verifier interface; toncenter verifier; mock; NewMemo
 internal/service    invoice lifecycle: create, verify, claim-once settle, expire
 internal/deeplink   ton://transfer builder + QR PNG

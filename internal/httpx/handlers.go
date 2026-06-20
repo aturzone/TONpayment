@@ -45,6 +45,7 @@ func (a *api) createInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
+		PayTo      string            `json:"payTo"`
 		AmountNano int64             `json:"amountNano"`
 		TTLSeconds int               `json:"ttlSeconds"`
 		Metadata   map[string]string `json:"metadata"`
@@ -57,7 +58,7 @@ func (a *api) createInvoice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "amountNano must be a positive integer (nanoTON)")
 		return
 	}
-	inv, err := a.s.Service.CreateInvoice(in.AmountNano, time.Duration(in.TTLSeconds)*time.Second, in.Metadata)
+	inv, err := a.s.Service.CreateInvoice(in.PayTo, in.AmountNano, time.Duration(in.TTLSeconds)*time.Second, in.Metadata)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

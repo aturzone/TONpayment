@@ -16,7 +16,14 @@ type Memory struct {
 	mu       sync.RWMutex
 	dir      string
 	invoices map[string]Invoice
+	// memos indexes (payTo, memo) -> id so CreateInvoice can enforce memo
+	// uniqueness in O(1). It is derived state, rebuilt from invoices on load.
+	memos map[string]string
 }
+
+// memoKey is the uniqueness key: a memo only needs to be unique per receiving
+// address, since that is the scope the verifier matches within.
+func memoKey(payTo, memo string) string { return payTo + "\x00" + memo }
 
 var _ Store = (*Memory)(nil)
 
@@ -27,7 +34,7 @@ type snapshot struct {
 // NewMemory creates the store, loading prior state from dir/store.json if present.
 // Pass an empty dir to disable persistence (useful in tests).
 func NewMemory(dir string) (*Memory, error) {
-	m := &Memory{dir: dir, invoices: map[string]Invoice{}}
+	m := &Memory{dir: dir, invoices: map[string]Invoice{}, memos: map[string]string{}}
 	if dir != "" {
 		if err := m.load(); err != nil {
 			return nil, err
@@ -52,6 +59,10 @@ func (m *Memory) load() error {
 	}
 	if s.Invoices != nil {
 		m.invoices = s.Invoices
+	}
+	m.memos = make(map[string]string, len(m.invoices))
+	for id, inv := range m.invoices {
+		m.memos[memoKey(inv.PayTo, inv.Memo)] = id
 	}
 	return nil
 }
@@ -78,9 +89,15 @@ func (m *Memory) persist() error {
 func (m *Memory) CreateInvoice(inv Invoice) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	mk := memoKey(inv.PayTo, inv.Memo)
+	if _, exists := m.memos[mk]; exists {
+		return ErrMemoExists
+	}
 	m.invoices[inv.ID] = inv
+	m.memos[mk] = inv.ID
 	if err := m.persist(); err != nil {
 		delete(m.invoices, inv.ID) // roll back so memory and disk agree
+		delete(m.memos, mk)
 		return err
 	}
 	return nil
@@ -134,6 +151,22 @@ func (m *Memory) ClaimInvoiceForSettlement(id, txHash string, paidAt time.Time) 
 		return false, err
 	}
 	return true, nil
+}
+
+func (m *Memory) PendingCounts(payTo string) (int, int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	total, forAddr := 0, 0
+	for _, inv := range m.invoices {
+		if inv.Status != StatusPending {
+			continue
+		}
+		total++
+		if inv.PayTo == payTo {
+			forAddr++
+		}
+	}
+	return total, forAddr, nil
 }
 
 func (m *Memory) ExpireInvoice(id string) (bool, error) {

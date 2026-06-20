@@ -12,14 +12,15 @@ import (
 
 	"github.com/aturzone/TONpayment/internal/idgen"
 	"github.com/aturzone/TONpayment/internal/store"
+	"github.com/aturzone/TONpayment/internal/tonaddr"
 	"github.com/aturzone/TONpayment/internal/wallet"
 )
 
 const (
-	// MaxTTL bounds how long an invoice may stay pending, so a caller cannot mint
-	// effectively immortal invoices that the poller re-checks (and bills toncenter
-	// for) forever.
-	MaxTTL = 7 * 24 * time.Hour
+	// MaxTTL is the default hard cap on how long an invoice may stay pending, so a
+	// caller cannot mint long-lived invoices that the poller re-checks (and bills
+	// toncenter for). Overridable via SetLimits / TON_MAX_TTL_SECONDS.
+	MaxTTL = 24 * time.Hour
 	// metadata bounds: the caller's reference is opaque, but it is stored and
 	// echoed on every read/webhook, so keep it small.
 	maxMetadataKeys  = 64
@@ -34,22 +35,38 @@ type Webhook interface {
 }
 
 type Service struct {
-	st         store.Store
-	verifier   wallet.Verifier
-	payTo      string
-	currency   string
-	defaultTTL time.Duration
-	webhook    Webhook
-	locks      keyedLocks
+	st                store.Store
+	verifier          wallet.Verifier
+	defaultPayTo      string
+	currency          string
+	defaultTTL        time.Duration
+	maxTTL            time.Duration
+	maxPending        int // global cap on pending invoices; 0 = unlimited
+	maxPendingPerAddr int // per-address cap on pending invoices; 0 = unlimited
+	webhook           Webhook
+	locks             keyedLocks
 }
 
-// New builds the service. payTo is the receiving address stamped on every
-// invoice; defaultTTL is used when a create request omits a TTL; wh may be nil.
-func New(st store.Store, v wallet.Verifier, payTo string, defaultTTL time.Duration, wh Webhook) *Service {
+// New builds the service. defaultPayTo is the fallback receiving address used when
+// a create request omits payTo (it may be empty — then every request must supply
+// its own payTo); defaultTTL is used when a create request omits a TTL; wh may be
+// nil.
+func New(st store.Store, v wallet.Verifier, defaultPayTo string, defaultTTL time.Duration, wh Webhook) *Service {
 	if defaultTTL <= 0 {
 		defaultTTL = 15 * time.Minute
 	}
-	return &Service{st: st, verifier: v, payTo: payTo, currency: "TON", defaultTTL: defaultTTL, webhook: wh}
+	return &Service{st: st, verifier: v, defaultPayTo: defaultPayTo, currency: "TON", defaultTTL: defaultTTL, maxTTL: MaxTTL, webhook: wh}
+}
+
+// SetLimits configures resource bounds: the maximum invoice TTL, and caps on the
+// number of pending invoices in total and per receiving address (0 = unlimited).
+// A non-positive maxTTL keeps the default. Call once at startup, before serving.
+func (s *Service) SetLimits(maxTTL time.Duration, maxPending, maxPendingPerAddr int) {
+	if maxTTL > 0 {
+		s.maxTTL = maxTTL
+	}
+	s.maxPending = maxPending
+	s.maxPendingPerAddr = maxPendingPerAddr
 }
 
 // keyedLocks serializes critical sections per key (here: per invoice ID) so
@@ -80,27 +97,50 @@ func (k *keyedLocks) lock(key string) func() {
 // CreateInvoice builds a pending invoice for amountNano (nanoTON), valid for ttl
 // (or the configured default if ttl <= 0). metadata is the caller's own opaque
 // reference and is echoed back unchanged.
-func (s *Service) CreateInvoice(amountNano int64, ttl time.Duration, metadata map[string]string) (store.Invoice, error) {
+func (s *Service) CreateInvoice(payTo string, amountNano int64, ttl time.Duration, metadata map[string]string) (store.Invoice, error) {
 	if amountNano <= 0 {
 		return store.Invoice{}, errors.New("amountNano must be a positive integer (nanoTON)")
 	}
-	if s.payTo == "" {
-		return store.Invoice{}, errors.New("no receiving address configured (set TON_RECEIVING_ADDRESS)")
+	// Resolve the receiving address: a per-request payTo wins, otherwise the
+	// configured default. The per-request value is untrusted input, so validate and
+	// canonicalize it here; the default was already validated at startup.
+	addr := s.defaultPayTo
+	if payTo != "" {
+		norm, err := tonaddr.Normalize(payTo)
+		if err != nil {
+			return store.Invoice{}, fmt.Errorf("payTo: %w", err)
+		}
+		addr = norm
+	}
+	if addr == "" {
+		return store.Invoice{}, errors.New("no receiving address: provide payTo, or configure a default (TON_RECEIVING_ADDRESS)")
 	}
 	if err := validateMetadata(metadata); err != nil {
 		return store.Invoice{}, err
 	}
+	// Bound the pending set: an unbounded number of pending invoices is unbounded
+	// verification work (each is re-checked against toncenter every poll tick).
+	if s.maxPending > 0 || s.maxPendingPerAddr > 0 {
+		total, forAddr, err := s.st.PendingCounts(addr)
+		if err != nil {
+			return store.Invoice{}, err
+		}
+		if s.maxPending > 0 && total >= s.maxPending {
+			return store.Invoice{}, errors.New("too many pending invoices on this server; try again later")
+		}
+		if s.maxPendingPerAddr > 0 && forAddr >= s.maxPendingPerAddr {
+			return store.Invoice{}, errors.New("too many pending invoices for this address; try again later")
+		}
+	}
 	if ttl <= 0 {
 		ttl = s.defaultTTL
 	}
-	if ttl > MaxTTL {
-		ttl = MaxTTL
+	if ttl > s.maxTTL {
+		ttl = s.maxTTL
 	}
 	now := time.Now().UTC()
 	inv := store.Invoice{
-		ID:         idgen.New("inv"),
-		PayTo:      s.payTo,
-		Memo:       wallet.NewMemo(),
+		PayTo:      addr,
 		AmountNano: amountNano,
 		Currency:   s.currency,
 		Status:     store.StatusPending,
@@ -108,10 +148,22 @@ func (s *Service) CreateInvoice(amountNano int64, ttl time.Duration, metadata ma
 		CreatedAt:  now,
 		ExpiresAt:  now.Add(ttl),
 	}
-	if err := s.st.CreateInvoice(inv); err != nil {
+	// Allocate a unique (PayTo, Memo). The store rejects a duplicate memo, so the
+	// uniqueness the verifier relies on is a hard guarantee, not a probability.
+	// With a 128-bit memo the first attempt essentially always wins.
+	for attempt := 0; attempt < 5; attempt++ {
+		inv.ID = idgen.New("inv")
+		inv.Memo = wallet.NewMemo()
+		err := s.st.CreateInvoice(inv)
+		if err == nil {
+			return inv, nil
+		}
+		if errors.Is(err, store.ErrMemoExists) {
+			continue
+		}
 		return store.Invoice{}, err
 	}
-	return inv, nil
+	return store.Invoice{}, errors.New("could not allocate a unique memo; please retry")
 }
 
 // Get returns an invoice without touching the chain.

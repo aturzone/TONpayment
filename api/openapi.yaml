@@ -1,0 +1,265 @@
+openapi: 3.0.3
+info:
+  title: TONpayment API
+  version: 0.1.0
+  description: >
+    Non-custodial, watch-only TON payment/donation verification. The service
+    issues invoices, watches the TON blockchain via the toncenter v2 API, and
+    confirms payment by matching the (receiving address, memo, amount) triple. It
+    never holds keys or moves funds. This document is the single source of truth
+    for the API — generate typed clients (web, mobile) from it.
+  license:
+    name: MIT
+    url: https://github.com/aturzone/TONpayment/blob/main/LICENSE
+
+servers:
+  - url: http://localhost:8080
+    description: Local dev
+  - url: https://api.example.com
+    description: Production (replace with your host)
+
+tags:
+  - name: invoices
+  - name: health
+
+paths:
+  /v1/invoices:
+    post:
+      tags: [invoices]
+      summary: Create an invoice
+      description: >
+        Creates a pending invoice and returns it with a payment deeplink and QR
+        endpoint. If the server sets TON_CREATE_API_KEY, the key is required (as
+        `X-API-Key` or `Authorization: Bearer`); otherwise creation is open.
+        Rate-limited per client IP.
+      operationId: createInvoice
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - {} # open when no create key is configured
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInvoiceRequest'
+            examples:
+              default:
+                value:
+                  amountNano: 2500000000
+                  ttlSeconds: 900
+                  metadata: { orderId: abc-123 }
+              perRequestAddress:
+                value:
+                  payTo: UQDrjaLahLkMB-hMCmkzOyBuHJ139ZUYmPHu6RRBKnbdLM5o
+                  amountNano: 1000000000
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invoice' }
+        '400':
+          description: Invalid body (bad amount, invalid payTo, oversized metadata)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Missing or invalid API key (when one is configured)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/invoices/{id}:
+    get:
+      tags: [invoices]
+      summary: Fetch an invoice
+      description: Returns the current invoice without touching the chain.
+      operationId: getInvoice
+      parameters:
+        - $ref: '#/components/parameters/InvoiceId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invoice' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/invoices/{id}/status:
+    get:
+      tags: [invoices]
+      summary: Verify on-chain, settle, then return
+      description: >
+        Triggers an on-demand verification: a matching on-chain payment flips the
+        invoice to `paid` (and fires the webhook); an unpaid invoice past its TTL
+        flips to `expired`; otherwise it stays `pending`. Idempotent and safe to
+        call concurrently. Rate-limited.
+      operationId: getInvoiceStatus
+      parameters:
+        - $ref: '#/components/parameters/InvoiceId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invoice' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/invoices/{id}/qr:
+    get:
+      tags: [invoices]
+      summary: QR PNG of the payment deeplink
+      operationId: getInvoiceQR
+      parameters:
+        - $ref: '#/components/parameters/InvoiceId'
+        - name: size
+          in: query
+          required: false
+          schema: { type: integer, minimum: 64, maximum: 1024, default: 256 }
+          description: PNG size in pixels (clamped to 64..1024).
+      responses:
+        '200':
+          description: OK
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Rate limit exceeded
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness
+      operationId: healthz
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  service: { type: string }
+                  env: { type: string }
+
+components:
+  securitySchemes:
+    ApiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+
+  parameters:
+    InvoiceId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      example: inv_Hr0bx95etpRW
+
+  schemas:
+    CreateInvoiceRequest:
+      type: object
+      required: [amountNano]
+      properties:
+        payTo:
+          type: string
+          description: >
+            Receiving TON address for this invoice (raw `0:…` or user-friendly
+            `EQ…`/`UQ…`). Validated and canonicalized. Optional only if the server
+            has a default TON_RECEIVING_ADDRESS configured.
+          example: UQDrjaLahLkMB-hMCmkzOyBuHJ139ZUYmPHu6RRBKnbdLM5o
+        amountNano:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Amount in nanoTON (1 TON = 1e9). Must be > 0. Overpayment is accepted.
+          example: 2500000000
+        ttlSeconds:
+          type: integer
+          description: Invoice lifetime in seconds. Defaults to the server's TON_DEFAULT_TTL_SECONDS; capped at the server's max TTL.
+          example: 900
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+          description: Your own opaque reference (orderId, userId, …). Echoed on every read and webhook — never put secrets here. Capped at 64 keys / 8 KB.
+
+    Invoice:
+      type: object
+      properties:
+        id: { type: string, example: inv_Hr0bx95etpRW }
+        status:
+          type: string
+          enum: [pending, paid, expired]
+        payTo: { type: string, description: Canonical receiving address }
+        memo: { type: string, description: Unique per-invoice comment the payer must include, example: TON-ca5808f8a1b2c3d4 }
+        amountNano: { type: integer, format: int64, example: 2500000000 }
+        amount: { type: string, description: Human-readable TON amount, example: '2.5' }
+        currency: { type: string, enum: [TON] }
+        txHash: { type: string, description: Settling transaction hash (empty until paid) }
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+        deeplink:
+          type: string
+          description: ton://transfer URI for paying the invoice
+          example: ton://transfer/UQ...?amount=2500000000&text=TON-ca5808f8a1b2c3d4
+        qr:
+          type: string
+          description: Relative path to the QR PNG for this invoice
+          example: /v1/invoices/inv_Hr0bx95etpRW/qr
+        createdAt: { type: string, format: date-time }
+        paidAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+      required: [id, status, payTo, memo, amountNano, amount, currency, deeplink, qr, createdAt, expiresAt]
+
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+      required: [error]
+
+webhooks:
+  invoicePaid:
+    post:
+      summary: Invoice settled (optional outbound webhook)
+      description: >
+        If TON_WEBHOOK_URL is set, the service POSTs the full invoice JSON here when
+        an invoice settles, with header `X-Signature: sha256=<hex HMAC-SHA256(secret,
+        body)>`. Verify the signature before trusting the payload; delivery is
+        best-effort with retries.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Invoice' }
+      responses:
+        '2XX':
+          description: Acknowledged (any 2xx); non-2xx is retried with backoff.

@@ -8,6 +8,21 @@ tagged release will be `v0.1.0`.
 ## [Unreleased]
 
 ### Added
+- Machine-readable OpenAPI spec at `api/openapi.yaml` — the contract clients (web,
+  mobile) generate typed SDKs from.
+- Per-request receiving address: `POST /v1/invoices` accepts an optional `payTo`
+  (validated + canonicalized), enabling multi-tenant use where each caller is paid
+  to its own address. `TON_RECEIVING_ADDRESS` becomes an optional default. Prod
+  refuses to start with neither a default nor `TON_CREATE_API_KEY` (so it is never
+  an open, arbitrary-address invoice minter).
+- Resource bounds: caps on invoice TTL (`TON_MAX_TTL_SECONDS`, default 24h) and on
+  the number of pending invoices in total (`TON_MAX_PENDING`) and per receiving
+  address (`TON_MAX_PENDING_PER_ADDRESS`), so an unbounded pending set can't exhaust
+  the toncenter budget. The default max TTL drops from 7 days to 24h.
+- `internal/tonaddr`: TON address parser/validator/normalizer (raw and
+  user-friendly forms, CRC-16/XMODEM checksum). The receiving address is now
+  validated and canonicalized at startup — prod fails fast on a malformed
+  address instead of silently leaving every invoice stuck pending.
 - Non-custodial, watch-only TON payment service.
 - Invoice lifecycle: create (memo + amount + receiving address), on-chain
   verification via toncenter v2 (match by memo + amount, fail-closed), and
@@ -24,8 +39,17 @@ tagged release will be `v0.1.0`.
   `-race` and a Postgres integration test.
 
 ### Security
-- Production refuses to start without `TON_RECEIVING_ADDRESS` and never falls back
-  to the auto-confirming mock verifier.
+- Memo entropy raised to 128 bits and uniqueness made a hard guarantee: the store
+  enforces a unique `(pay_to, memo)` (a unique index in Postgres, an in-memory
+  index otherwise), so a single on-chain payment can never settle two invoices.
+- Production never falls back to the auto-confirming mock verifier, and refuses to
+  start as an open, arbitrary-address minter (it needs a default address or a
+  create-API-key gate).
+- Verifier defense-in-depth: besides memo + amount, it now also checks the
+  transaction destination (by account identity, across address representations) and
+  ignores transactions that predate the invoice.
+- Postgres queries are bounded by a 10s timeout, and shutdown bounds the webhook
+  drain so a slow callback can't hang termination.
 - `X-Forwarded-For` is only trusted when `TON_TRUST_PROXY` is set.
 - Fail-closed verification; constant-time create-API-key comparison; no secrets in
   the repository.

@@ -21,6 +21,13 @@ following match an invoice:
 That triple — address + memo + amount — is the real protection. The memo alone,
 or the amount alone, is not enough.
 
+The memo is 128 bits of randomness, and the store **enforces** that `(receiving
+address, memo)` is unique (a unique index in Postgres; an in-memory index
+otherwise). So memo uniqueness is a hard guarantee, not a probability: a single
+on-chain payment can never be matched to two different invoices. Receiving
+addresses are also validated and canonicalized (CRC-checked) before use, so a
+mistyped address is rejected up front rather than silently matching nothing.
+
 ## Fail-closed verification
 
 The verifier **fails closed**: any error talking to toncenter, any malformed
@@ -40,10 +47,10 @@ probabilistic "0-conf" reorg window to wait out.
 The verifier reads the receiving address's most recent **~30 incoming
 transactions** from toncenter and matches by memo + amount. On a high-traffic
 *shared* receiving address, a genuine payment could be pushed out of that window
-before it is observed. Because each memo is unique per invoice, this can only ever
-cause a **missed** match (the invoice stays `pending`), never a wrong or duplicate
-credit. Mitigate by polling frequently and/or using a dedicated receiving address
-per integration.
+before it is observed. Because each memo is unique per receiving address (enforced
+by the store), this can only ever cause a **missed** match (the invoice stays
+`pending`), never a wrong or duplicate credit. Mitigate by polling frequently
+and/or using a dedicated receiving address per integration.
 
 ## Webhooks
 

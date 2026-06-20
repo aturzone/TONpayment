@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -44,7 +45,13 @@ func NewPostgres(ctx context.Context, url string) (*Postgres, error) {
 
 func (p *Postgres) Close() { p.pool.Close() }
 
-func bg() context.Context { return context.Background() }
+// opTimeout bounds every query so a stalled database cannot block a request handler
+// or the poller goroutine indefinitely.
+const opTimeout = 10 * time.Second
+
+func opCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), opTimeout)
+}
 
 // nt returns nil for a zero time so it stores as SQL NULL.
 func nt(t time.Time) any {
@@ -70,6 +77,10 @@ CREATE TABLE IF NOT EXISTS invoices (
   expires_at timestamptz
 );
 CREATE INDEX IF NOT EXISTS invoices_status ON invoices(status);
+-- A memo must be unique per receiving address: it is the per-invoice key the
+-- verifier matches within an address, so a collision could let one on-chain
+-- payment settle two invoices. The unique index makes that impossible.
+CREATE UNIQUE INDEX IF NOT EXISTS invoices_payto_memo ON invoices(pay_to, memo);
 `
 
 const invoiceCols = `id,pay_to,memo,amount_nano,currency,status,tx_hash,metadata,created_at,paid_at,expires_at`
@@ -105,15 +116,23 @@ func metaJSON(m map[string]string) string {
 }
 
 func (p *Postgres) CreateInvoice(inv Invoice) error {
-	_, err := p.pool.Exec(bg(), `
+	ctx, cancel := opCtx()
+	defer cancel()
+	_, err := p.pool.Exec(ctx, `
 INSERT INTO invoices (id,pay_to,memo,amount_nano,currency,status,tx_hash,metadata,created_at,paid_at,expires_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		inv.ID, inv.PayTo, inv.Memo, inv.AmountNano, inv.Currency, inv.Status, inv.TxHash, metaJSON(inv.Metadata), inv.CreatedAt, nt(inv.PaidAt), nt(inv.ExpiresAt))
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
+		return ErrMemoExists
+	}
 	return err
 }
 
 func (p *Postgres) GetInvoice(id string) (Invoice, bool) {
-	inv, err := scanInvoice(p.pool.QueryRow(bg(), `SELECT `+invoiceCols+` FROM invoices WHERE id=$1`, id))
+	ctx, cancel := opCtx()
+	defer cancel()
+	inv, err := scanInvoice(p.pool.QueryRow(ctx, `SELECT `+invoiceCols+` FROM invoices WHERE id=$1`, id))
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			log.Printf("store: GetInvoice %s: %v", id, err) // a real DB error, not just "not found"
@@ -124,7 +143,9 @@ func (p *Postgres) GetInvoice(id string) (Invoice, bool) {
 }
 
 func (p *Postgres) ListInvoices() []Invoice {
-	rows, err := p.pool.Query(bg(), `SELECT `+invoiceCols+` FROM invoices ORDER BY created_at DESC`)
+	ctx, cancel := opCtx()
+	defer cancel()
+	rows, err := p.pool.Query(ctx, `SELECT `+invoiceCols+` FROM invoices ORDER BY created_at DESC`)
 	if err != nil {
 		log.Printf("store: ListInvoices: %v", err)
 		return nil
@@ -140,7 +161,9 @@ func (p *Postgres) ListInvoices() []Invoice {
 }
 
 func (p *Postgres) ListPending() []Invoice {
-	rows, err := p.pool.Query(bg(), `SELECT `+invoiceCols+` FROM invoices WHERE status='pending' ORDER BY created_at`)
+	ctx, cancel := opCtx()
+	defer cancel()
+	rows, err := p.pool.Query(ctx, `SELECT `+invoiceCols+` FROM invoices WHERE status='pending' ORDER BY created_at`)
 	if err != nil {
 		log.Printf("store: ListPending: %v", err)
 		return nil
@@ -155,8 +178,23 @@ func (p *Postgres) ListPending() []Invoice {
 	return out
 }
 
+func (p *Postgres) PendingCounts(payTo string) (int, int, error) {
+	ctx, cancel := opCtx()
+	defer cancel()
+	var total, forAddr int
+	err := p.pool.QueryRow(ctx,
+		`SELECT count(*), count(*) FILTER (WHERE pay_to=$1) FROM invoices WHERE status='pending'`,
+		payTo).Scan(&total, &forAddr)
+	if err != nil {
+		return 0, 0, err
+	}
+	return total, forAddr, nil
+}
+
 func (p *Postgres) ClaimInvoiceForSettlement(id, txHash string, paidAt time.Time) (bool, error) {
-	tag, err := p.pool.Exec(bg(), `UPDATE invoices SET status='paid', tx_hash=$2, paid_at=$3 WHERE id=$1 AND status='pending'`,
+	ctx, cancel := opCtx()
+	defer cancel()
+	tag, err := p.pool.Exec(ctx, `UPDATE invoices SET status='paid', tx_hash=$2, paid_at=$3 WHERE id=$1 AND status='pending'`,
 		id, txHash, nt(paidAt))
 	if err != nil {
 		return false, err
@@ -165,7 +203,9 @@ func (p *Postgres) ClaimInvoiceForSettlement(id, txHash string, paidAt time.Time
 }
 
 func (p *Postgres) ExpireInvoice(id string) (bool, error) {
-	tag, err := p.pool.Exec(bg(), `UPDATE invoices SET status='expired' WHERE id=$1 AND status='pending'`, id)
+	ctx, cancel := opCtx()
+	defer cancel()
+	tag, err := p.pool.Exec(ctx, `UPDATE invoices SET status='expired' WHERE id=$1 AND status='pending'`, id)
 	if err != nil {
 		return false, err
 	}

@@ -4,7 +4,17 @@
 // is agnostic to where invoices are kept.
 package store
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrMemoExists is returned by CreateInvoice when an invoice with the same
+// (PayTo, Memo) already exists. It makes memo uniqueness a hard guarantee rather
+// than a probabilistic one: the caller regenerates the memo and retries. Two
+// invoices that shared a memo on the same address could otherwise both be settled
+// by a single on-chain payment (a duplicate credit).
+var ErrMemoExists = errors.New("an invoice with this memo already exists for this address")
 
 // Invoice statuses.
 const (
@@ -51,4 +61,8 @@ type Store interface {
 	// ExpireInvoice atomically flips a pending invoice to expired and reports whether
 	// THIS call won the transition. A paid invoice is never expired.
 	ExpireInvoice(id string) (claimed bool, err error)
+	// PendingCounts returns how many invoices are pending in total and for the given
+	// receiving address, so creation can be bounded — an unbounded pending set is
+	// unbounded verification work against toncenter.
+	PendingCounts(payTo string) (total int, forAddr int, err error)
 }

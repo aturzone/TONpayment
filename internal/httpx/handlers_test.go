@@ -91,6 +91,51 @@ func TestCreateRejectsBadAmount(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsBadPayTo(t *testing.T) {
+	srv := newTestServer(t)
+	rec := httptest.NewRecorder()
+	body := `{"amountNano":1000000000,"payTo":"not-a-ton-address"}`
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/invoices", strings.NewReader(body)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400 for an invalid payTo", rec.Code)
+	}
+}
+
+func TestCreateRequiresAPIKeyWhenConfigured(t *testing.T) {
+	st, err := store.NewMemory("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := service.New(st, paidVerifier{}, "UQpay", 15*time.Minute, nil)
+	srv := NewServer(Services{Cfg: &config.Config{Env: "dev", CreateAPIKey: "secret"}, Service: svc})
+	body := `{"amountNano":1000000000}`
+
+	// no key -> 401
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/invoices", strings.NewReader(body)))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no key: code = %d, want 401", rec.Code)
+	}
+
+	// X-API-Key -> 201
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/invoices", strings.NewReader(body))
+	req2.Header.Set("X-API-Key", "secret")
+	srv.Handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusCreated {
+		t.Fatalf("X-API-Key: code = %d, want 201", rec2.Code)
+	}
+
+	// Authorization: Bearer -> 201
+	rec3 := httptest.NewRecorder()
+	req3 := httptest.NewRequest(http.MethodPost, "/v1/invoices", strings.NewReader(body))
+	req3.Header.Set("Authorization", "Bearer secret")
+	srv.Handler.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusCreated {
+		t.Fatalf("Bearer key: code = %d, want 201", rec3.Code)
+	}
+}
+
 func TestHealthz(t *testing.T) {
 	srv := newTestServer(t)
 	rec := httptest.NewRecorder()

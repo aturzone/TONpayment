@@ -17,10 +17,13 @@ type Verifier interface {
 }
 
 // NewMemo returns a unique payment comment used to match a TON transfer to an
-// invoice. Four random bytes are enough: the memo is only meaningful alongside
-// the receiving address and amount.
+// invoice. It draws 16 random bytes (128 bits) so collisions are not merely
+// improbable but effectively impossible — the store additionally enforces memo
+// uniqueness per receiving address, so the "duplicate credit" path the memo
+// guards against cannot occur. The memo is only meaningful alongside the
+// receiving address and amount.
 func NewMemo() string {
-	b := make([]byte, 4)
+	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return "TON-" + hex.EncodeToString(b)
 }

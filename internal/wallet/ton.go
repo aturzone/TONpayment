@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aturzone/TONpayment/internal/store"
+	"github.com/aturzone/TONpayment/internal/tonaddr"
 )
 
 // TonVerifier confirms a payment by reading the receiving address's incoming
@@ -38,6 +39,7 @@ func NewTonVerifier(apiBase, apiKey string, client *http.Client) *TonVerifier {
 type tcResponse struct {
 	OK     bool `json:"ok"`
 	Result []struct {
+		Utime         int64 `json:"utime"`
 		TransactionID struct {
 			Lt   string `json:"lt"`
 			Hash string `json:"hash"`
@@ -89,9 +91,26 @@ func (v *TonVerifier) Verify(inv store.Invoice) (bool, string, error) {
 	// by toncenter scoping results to the queried address (every in_msg here is a
 	// message TO inv.PayTo); the memo+amount match then binds the payment to THIS
 	// invoice. See SECURITY.md.
+	// inv.PayTo is canonical, but toncenter may return the destination in a different
+	// representation of the same account, so compare by account identity, not string.
+	want, wantErr := tonaddr.Parse(inv.PayTo)
 	for _, tx := range body.Result {
 		if tx.InMsg.Message != inv.Memo {
 			continue
+		}
+		// Defense in depth: ignore a transaction that predates the invoice — a memo can
+		// only legitimately appear in a payment made after the invoice was created. The
+		// generous skew avoids rejecting a real payment over minor clock differences.
+		if tx.Utime > 0 && !inv.CreatedAt.IsZero() && tx.Utime < inv.CreatedAt.Add(-time.Hour).Unix() {
+			continue
+		}
+		// Defense in depth: the query is already scoped to inv.PayTo, but if the
+		// destination parses and is a *different* account, skip it. If it doesn't parse,
+		// trust the query scope rather than risk rejecting a real payment (fail closed).
+		if wantErr == nil && tx.InMsg.Destination != "" {
+			if got, err := tonaddr.Parse(tx.InMsg.Destination); err == nil && got.Raw() != want.Raw() {
+				continue
+			}
 		}
 		val, err := strconv.ParseInt(tx.InMsg.Value, 10, 64)
 		if err != nil {
