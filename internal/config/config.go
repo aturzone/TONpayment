@@ -46,7 +46,26 @@ type Config struct {
 	// Webhook (optional).
 	WebhookURL    string
 	WebhookSecret string
+
+	// Multi-tenant mode (the hosted gateway platform). Off by default so the engine
+	// runs exactly as before for single-tenant/OSS self-hosters. When on, requires a
+	// database (no file store) and a session secret.
+	Multitenant   bool
+	SessionSecret string   // HMAC secret for merchant session tokens (required in MT mode)
+	AuthDomains   []string // allowed ton_proof domains, e.g. tonpayment.net
+	AdminWallets  []string // wallets granted platform-admin via ton_proof
+	AdminToken    string   // optional bearer token for admin (self-host fallback)
+	RedisURL      string   // optional: distributed rate-limit / future queue
+
+	// Poller sharding: split pending invoices across replicas by address hash so N
+	// pollers don't all re-verify every invoice. Default 0/1 = "this poller handles
+	// everything" (today's behavior).
+	PollerShardIndex int
+	PollerShardCount int
 }
+
+// IsMultitenant reports whether the hosted multi-tenant platform is enabled.
+func (c *Config) IsMultitenant() bool { return c.Multitenant }
 
 func (c *Config) IsProd() bool { return c.Env == "prod" || c.Env == "production" }
 
@@ -75,8 +94,16 @@ func Load() *Config {
 		PollConcurrency:   atoiDef(os.Getenv("TON_POLL_CONCURRENCY"), 4),
 		WebhookURL:        os.Getenv("TON_WEBHOOK_URL"),
 		WebhookSecret:     os.Getenv("TON_WEBHOOK_SECRET"),
+		Multitenant:       boolDef(os.Getenv("TON_MULTITENANT"), false),
+		SessionSecret:     os.Getenv("TON_SESSION_SECRET"),
+		AdminToken:        os.Getenv("TON_ADMIN_TOKEN"),
+		RedisURL:          os.Getenv("TON_REDIS_URL"),
+		PollerShardIndex:  atoiDef(os.Getenv("TON_POLLER_SHARD_INDEX"), 0),
+		PollerShardCount:  atoiDef(os.Getenv("TON_POLLER_SHARD_COUNT"), 1),
 	}
 	c.AllowedOrigins = splitTrim(getenv("TON_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:4173"))
+	c.AuthDomains = splitTrim(os.Getenv("TON_AUTH_DOMAINS"))
+	c.AdminWallets = splitTrim(os.Getenv("TON_ADMIN_WALLETS"))
 	return c
 }
 
