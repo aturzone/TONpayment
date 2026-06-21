@@ -1,5 +1,9 @@
 # TONpayment — multi-stage build producing a tiny static image.
 FROM golang:1.26-alpine AS build
+# Fall through to direct VCS on any proxy error (a transitive dep can 403 on the
+# Go proxy); git is needed for those direct fetches. go.sum still verifies checksums.
+ENV GOPROXY=https://proxy.golang.org|direct
+RUN apk add --no-cache git
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
