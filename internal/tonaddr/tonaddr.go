@@ -87,6 +87,24 @@ func NormalizeOnNetwork(s string, wantTestnet bool) (string, error) {
 	return a.String(), nil
 }
 
+// Canonical is like NormalizeOnNetwork but always emits the NON-bounceable
+// user-friendly form (UQ…), which is the conventional receiving form. It is the
+// single identity form for a wallet across the platform: the merchant wallet from
+// ton_proof, a gateway's receiving address, and the wallet_ownership registry must
+// all use it so the "a wallet runs a donation link OR a payment gateway, never
+// both" rule compares apples to apples regardless of how the address was entered
+// (EQ/UQ/raw). On-chain matching compares account identity, not this string.
+func Canonical(s string, wantTestnet bool) (string, error) {
+	a, err := Parse(s)
+	if err != nil {
+		return "", err
+	}
+	if !strings.Contains(s, ":") && a.Testnet != wantTestnet {
+		return "", fmt.Errorf("address is a %s address, but this service targets %s", netName(a.Testnet), netName(wantTestnet))
+	}
+	return a.Friendly(false), nil
+}
+
 func netName(testnet bool) string {
 	if testnet {
 		return "testnet"

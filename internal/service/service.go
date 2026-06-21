@@ -101,11 +101,10 @@ func (k *keyedLocks) lock(key string) func() {
 
 // CreateInvoice builds a pending invoice for amountNano (nanoTON), valid for ttl
 // (or the configured default if ttl <= 0). metadata is the caller's own opaque
-// reference and is echoed back unchanged.
+// reference and is echoed back unchanged. This is the single-tenant entry point: a
+// per-request payTo (untrusted) is validated here, otherwise the configured
+// default is used; the resulting invoice carries no merchant/gateway tag.
 func (s *Service) CreateInvoice(payTo string, amountNano int64, ttl time.Duration, metadata map[string]string) (store.Invoice, error) {
-	if amountNano <= 0 {
-		return store.Invoice{}, errors.New("amountNano must be a positive integer (nanoTON)")
-	}
 	// Resolve the receiving address: a per-request payTo wins, otherwise the
 	// configured default. The per-request value is untrusted input, so validate and
 	// canonicalize it here; the default was already validated at startup.
@@ -116,6 +115,25 @@ func (s *Service) CreateInvoice(payTo string, amountNano int64, ttl time.Duratio
 			return store.Invoice{}, fmt.Errorf("payTo: %w", err)
 		}
 		addr = norm
+	}
+	return s.create(addr, amountNano, ttl, metadata, "", "")
+}
+
+// CreateInvoiceForGateway is the multi-tenant entry point: it creates an invoice
+// paid to a gateway's receiving address and tags it with the gateway + merchant so
+// reads, webhooks and analytics can be scoped. The address was validated and
+// canonicalized at gateway creation, so it is trusted here.
+func (s *Service) CreateInvoiceForGateway(g store.Gateway, amountNano int64, ttl time.Duration, metadata map[string]string) (store.Invoice, error) {
+	return s.create(g.ReceivingAddress, amountNano, ttl, metadata, g.MerchantID, g.ID)
+}
+
+// create is the shared invoice-creation core: it validates the amount, metadata and
+// pending caps, clamps the TTL, and allocates a unique (PayTo, Memo). addr must
+// already be resolved and canonical. merchantID/gatewayID are empty in
+// single-tenant mode.
+func (s *Service) create(addr string, amountNano int64, ttl time.Duration, metadata map[string]string, merchantID, gatewayID string) (store.Invoice, error) {
+	if amountNano <= 0 {
+		return store.Invoice{}, errors.New("amountNano must be a positive integer (nanoTON)")
 	}
 	if addr == "" {
 		return store.Invoice{}, errors.New("no receiving address: provide payTo, or configure a default (TON_RECEIVING_ADDRESS)")
@@ -152,6 +170,8 @@ func (s *Service) CreateInvoice(payTo string, amountNano int64, ttl time.Duratio
 		Metadata:   metadata,
 		CreatedAt:  now,
 		ExpiresAt:  now.Add(ttl),
+		MerchantID: merchantID,
+		GatewayID:  gatewayID,
 	}
 	// Allocate a unique (PayTo, Memo). The store rejects a duplicate memo, so the
 	// uniqueness the verifier relies on is a hard guarantee, not a probability.

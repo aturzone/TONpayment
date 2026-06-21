@@ -13,6 +13,19 @@ import (
 // turns a non-nil result into log.Fatalf. Dev is permissive (and uses the mock
 // verifier), so only prod is gated here.
 func validate(cfg *config.Config) error {
+	// Multi-tenant gates apply in dev and prod alike: the control plane needs a
+	// durable database, a session-signing secret, and a ton_proof domain allow-list.
+	if cfg.Multitenant {
+		if cfg.DatabaseURL == "" {
+			return fmt.Errorf("TON_MULTITENANT=1 requires TON_DATABASE_URL (Postgres) — the tenant control plane is not supported on the file store")
+		}
+		if len(cfg.SessionSecret) < 16 {
+			return fmt.Errorf("TON_MULTITENANT=1 requires TON_SESSION_SECRET of at least 16 chars (signs merchant session tokens)")
+		}
+		if len(cfg.AuthDomains) == 0 {
+			return fmt.Errorf("TON_MULTITENANT=1 requires TON_AUTH_DOMAINS (the allowed ton_proof domain(s), e.g. tonpayment.net)")
+		}
+	}
 	if !cfg.IsProd() {
 		return nil
 	}

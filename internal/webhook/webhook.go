@@ -65,14 +65,24 @@ func (s *Sender) Fire(inv store.Invoice) {
 	}()
 }
 
-func (s *Sender) deliver(inv store.Invoice) {
+// DeliverSync delivers synchronously (with the same signing + retries) and reports
+// whether it ultimately succeeded. The multi-tenant webhook router uses it to fan
+// out to a gateway's endpoints and record each outcome. Safe on a nil *Sender.
+func (s *Sender) DeliverSync(inv store.Invoice) bool {
+	if s == nil {
+		return false
+	}
+	return s.deliver(inv)
+}
+
+func (s *Sender) deliver(inv store.Invoice) bool {
 	s.sem <- struct{}{} // cap concurrent outbound deliveries
 	defer func() { <-s.sem }()
 
 	body, err := json.Marshal(inv)
 	if err != nil {
 		log.Printf("webhook: marshal invoice %s: %v", inv.ID, err)
-		return
+		return false
 	}
 	var sig string
 	if len(s.secret) > 0 {
@@ -85,7 +95,7 @@ func (s *Sender) deliver(inv store.Invoice) {
 	for attempt := 1; attempt <= s.retries; attempt++ {
 		err = s.attempt(body, sig)
 		if err == nil {
-			return // delivered
+			return true // delivered
 		}
 		log.Printf("webhook: invoice %s attempt %d/%d failed: %v", inv.ID, attempt, s.retries, err)
 		if attempt < s.retries {
@@ -96,6 +106,7 @@ func (s *Sender) deliver(inv store.Invoice) {
 		}
 	}
 	log.Printf("webhook: giving up on invoice %s after %d attempts", inv.ID, s.retries)
+	return false
 }
 
 func (s *Sender) attempt(body []byte, sig string) error {
