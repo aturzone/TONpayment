@@ -85,10 +85,13 @@ func (s *Service) Challenge(ctx context.Context) (string, error) {
 	return nonce, nil
 }
 
-// VerifyInput is a decoded verify request.
+// VerifyInput is a decoded verify request. PublicKey is the wallet's key as
+// reported by TON Connect (account.publicKey); when present and bound to Address it
+// is preferred over the on-chain lookup, so sign-in works for undeployed wallets.
 type VerifyInput struct {
-	Address string
-	Proof   Proof
+	Address   string
+	PublicKey ed25519.PublicKey
+	Proof     Proof
 }
 
 // Verify validates the proof end-to-end and returns a session token plus the
@@ -117,9 +120,18 @@ func (s *Service) Verify(ctx context.Context, in VerifyInput) (string, store.Mer
 	if !won {
 		return "", store.Merchant{}, ErrUsedNonce
 	}
-	// 5. resolve the on-chain public key and verify the signature
-	pub, err := s.Resolve(ctx, in.Address)
-	if err != nil || pub == nil {
+	// 5. resolve the public key. Prefer the TON Connect-supplied key when it is
+	// cryptographically bound to the claimed address (works for undeployed wallets);
+	// otherwise fall back to the on-chain get_public_key (deployed wallets only).
+	var pub ed25519.PublicKey
+	if len(in.PublicKey) == ed25519.PublicKeySize && PubKeyOwnsAddress(in.PublicKey, addr) {
+		pub = in.PublicKey
+	} else if s.Resolve != nil {
+		if p, err := s.Resolve(ctx, in.Address); err == nil && p != nil {
+			pub = p
+		}
+	}
+	if pub == nil {
 		return "", store.Merchant{}, ErrNoPubKey
 	}
 	if !VerifyProof(pub, addr, in.Proof) {

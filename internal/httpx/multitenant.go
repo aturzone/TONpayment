@@ -3,6 +3,7 @@ package httpx
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strconv"
@@ -81,12 +82,13 @@ func (a *api) authChallenge(w http.ResponseWriter, r *http.Request) {
 
 func (a *api) authVerify(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Address string `json:"address"`
-		Proof   struct {
-			Timestamp int64  `json:"timestamp"`
+		Address   string `json:"address"`
+		PublicKey string `json:"publicKey"`
+		Proof     struct {
+			Timestamp int64                  `json:"timestamp"`
 			Domain    struct{ Value string } `json:"domain"`
-			Payload   string `json:"payload"`
-			Signature string `json:"signature"`
+			Payload   string                 `json:"payload"`
+			Signature string                 `json:"signature"`
 		} `json:"proof"`
 	}
 	if err := decodeJSON(r, &in); err != nil {
@@ -98,8 +100,10 @@ func (a *api) authVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid signature encoding")
 		return
 	}
+	pub, _ := hex.DecodeString(strings.TrimPrefix(in.PublicKey, "0x")) // optional; nil if absent/bad
 	token, m, err := a.s.AuthSvc.Verify(r.Context(), auth.VerifyInput{
-		Address: in.Address,
+		Address:   in.Address,
+		PublicKey: pub,
 		Proof: auth.Proof{
 			Timestamp: in.Proof.Timestamp,
 			Domain:    in.Proof.Domain.Value,
