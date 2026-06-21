@@ -31,7 +31,10 @@ func validate(cfg *config.Config) error {
 	}
 	// Don't run an open, arbitrary-payTo minter with no auth — that lets anyone
 	// make the poller watch addresses of their choosing and burn the toncenter quota.
-	if cfg.TONReceiving == "" && cfg.CreateAPIKey == "" {
+	// Multi-tenant mode is exempt: every create is gated by a per-merchant API key
+	// (TenantKeyAuth) and is scoped to a gateway the merchant owns, so there is no
+	// open minter even without a global key or default address.
+	if !cfg.Multitenant && cfg.TONReceiving == "" && cfg.CreateAPIKey == "" {
 		return fmt.Errorf("set TON_RECEIVING_ADDRESS or TON_CREATE_API_KEY (refusing to run an open, arbitrary-address invoice minter)")
 	}
 	// A payment ledger needs a durable, multi-instance-safe store in prod.

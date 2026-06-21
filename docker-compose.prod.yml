@@ -1,0 +1,52 @@
+# Production multi-tenant deploy: the engine + its Postgres on the shared Caddy
+# network (master-claude_default), so the reverse proxy reaches the API by name
+# (tonpay-api:8080). Nothing is published to the host — only Caddy can reach it.
+# Secrets come from a server-side .env (see .env.prod.example); never commit .env.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+services:
+  tonpay-api:
+    build: .
+    image: tonpay-api
+    container_name: tonpay-api
+    restart: unless-stopped
+    environment:
+      TON_ENV: prod
+      TON_MULTITENANT: "1"
+      TON_DATABASE_URL: postgres://ton:${POSTGRES_PASSWORD}@tonpay-postgres:5432/tonpayment?sslmode=disable
+      TON_SESSION_SECRET: ${TON_SESSION_SECRET}
+      TON_AUTH_DOMAINS: ${TON_AUTH_DOMAINS:-tonpayment.net}
+      TON_NETWORK: ${TON_NETWORK:-mainnet}
+      TON_API_BASE: https://toncenter.com/api/v2
+      TON_API_KEY: ${TON_API_KEY:-}
+      TON_ADMIN_WALLETS: ${TON_ADMIN_WALLETS:-}
+      TON_ALLOWED_ORIGINS: ${TON_ALLOWED_ORIGINS:-https://tonpayment.net}
+      # Behind Caddy: trust X-Forwarded-For for rate-limit client-IP keying.
+      TON_TRUST_PROXY: "true"
+    depends_on:
+      - tonpay-postgres
+    networks:
+      - proxy
+    expose:
+      - "8080"
+
+  tonpay-postgres:
+    image: postgres:16-alpine
+    container_name: tonpay-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ton
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: tonpayment
+    volumes:
+      - tonpay_pgdata:/var/lib/postgresql/data
+    networks:
+      - proxy
+
+volumes:
+  tonpay_pgdata:
+
+networks:
+  proxy:
+    external: true
+    name: master-claude_default
