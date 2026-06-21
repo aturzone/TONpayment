@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -25,6 +24,9 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if err := validate(cfg); err != nil {
+		log.Fatalf("config: %v", err)
+	}
 
 	// Store: Postgres when a URL is set, otherwise in-memory/JSON.
 	var st store.Store
@@ -38,13 +40,6 @@ func main() {
 		st = p
 		log.Printf("store: postgres")
 	} else {
-		// The JSON file store is single-node and non-durable (whole-file rewrite,
-		// no cross-instance unique-(pay_to,memo) guarantee). A payment ledger in
-		// prod needs Postgres; require it unless the operator knowingly opts in to
-		// the file store (single instance + a persistent volume).
-		if cfg.IsProd() && os.Getenv("TON_ALLOW_FILE_STORE") != "1" {
-			log.Fatalf("config: prod needs a durable ledger — set TON_DATABASE_URL (Postgres). The JSON file store is single-node and non-durable; to use it deliberately (one instance, persistent volume) set TON_ALLOW_FILE_STORE=1.")
-		}
 		mem, err := store.NewMemory(cfg.DataDir)
 		if err != nil {
 			log.Fatalf("store init: %v", err)
@@ -69,15 +64,6 @@ func main() {
 		}
 	}
 
-	// Per-request payTo mode: the receiving address may be supplied per invoice, so a
-	// default TON_RECEIVING_ADDRESS is optional. But an open create endpoint that
-	// accepts arbitrary addresses with no auth lets anyone make the poller watch
-	// addresses of their choosing (burning the toncenter quota) — refuse to run that
-	// wide open in prod. Require either a default address or a create-API-key gate.
-	if cfg.IsProd() && cfg.TONReceiving == "" && cfg.CreateAPIKey == "" {
-		log.Fatalf("config: in prod set TON_RECEIVING_ADDRESS (a default receiving address) or TON_CREATE_API_KEY (to gate invoice creation); refusing to run an open, arbitrary-address invoice minter")
-	}
-
 	// Verifier selection. Production ALWAYS uses the real toncenter verifier — we must
 	// never fall back to the mock (which auto-confirms payments) in prod. Dev uses the
 	// mock so the create -> pending -> paid flow can be exercised without real funds.
@@ -93,19 +79,11 @@ func main() {
 		log.Printf("payments: no default receiving address — every invoice must supply its own payTo")
 	}
 
-	// Optional signed webhook on settlement. If configured, require a signing
-	// secret (so deliveries are always signed) and https in prod (no cleartext
-	// invoice data); the sender additionally refuses to follow redirects.
-	if cfg.WebhookURL != "" {
-		if cfg.WebhookSecret == "" {
-			if cfg.IsProd() {
-				log.Fatalf("config: set TON_WEBHOOK_SECRET when TON_WEBHOOK_URL is set — unsigned webhooks let a receiver be spoofed")
-			}
-			log.Printf("WARNING: TON_WEBHOOK_URL set without TON_WEBHOOK_SECRET; deliveries are UNSIGNED (dev only)")
-		}
-		if cfg.IsProd() && !strings.HasPrefix(strings.ToLower(cfg.WebhookURL), "https://") {
-			log.Fatalf("config: TON_WEBHOOK_URL must be https in prod (got %q) — invoice data must not be sent in cleartext", cfg.WebhookURL)
-		}
+	// Optional signed webhook on settlement (prod requirements are enforced in
+	// validate; the sender refuses to follow redirects). A dev webhook without a
+	// secret is allowed but unsigned — warn.
+	if cfg.WebhookURL != "" && cfg.WebhookSecret == "" {
+		log.Printf("WARNING: TON_WEBHOOK_URL set without TON_WEBHOOK_SECRET; deliveries are UNSIGNED (dev only)")
 	}
 	sender := webhook.New(cfg.WebhookURL, cfg.WebhookSecret, nil)
 	var wh service.Webhook

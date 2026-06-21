@@ -81,6 +81,9 @@ CREATE INDEX IF NOT EXISTS invoices_status ON invoices(status);
 -- verifier matches within an address, so a collision could let one on-chain
 -- payment settle two invoices. The unique index makes that impossible.
 CREATE UNIQUE INDEX IF NOT EXISTS invoices_payto_memo ON invoices(pay_to, memo);
+-- PendingCounts filters pending invoices by pay_to (the per-address cap); a
+-- partial index keeps that from scanning every pending row as volume grows.
+CREATE INDEX IF NOT EXISTS invoices_pending_payto ON invoices(pay_to) WHERE status='pending';
 `
 
 const invoiceCols = `id,pay_to,memo,amount_nano,currency,status,tx_hash,metadata,created_at,paid_at,expires_at`
