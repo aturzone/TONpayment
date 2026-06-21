@@ -61,8 +61,9 @@ invoice status from the API as authoritative before doing anything irreversible.
 ## Data exposure
 
 An invoice's `metadata` is echoed on every read (`GET /v1/invoices/{id}` and
-`/status`) and in webhooks. The invoice ID is an unguessable random token, but you
-should still **never store secrets in metadata**.
+`/status`) and in webhooks. All read endpoints are gated by the API key when one
+is configured (the invoice ID is an unguessable token, **not** an authorization),
+but you should still **never store secrets in metadata**.
 
 ## Secrets
 

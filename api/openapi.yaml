@@ -81,6 +81,8 @@ paths:
       summary: Fetch an invoice
       description: Returns the current invoice without touching the chain.
       operationId: getInvoice
+      security:
+        - ApiKeyHeader: []
       parameters:
         - $ref: '#/components/parameters/InvoiceId'
       responses:
@@ -89,6 +91,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Invoice' }
+        '401':
+          description: Missing or invalid API key (when one is configured)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '404':
           description: Not found
           content:
@@ -105,6 +112,8 @@ paths:
         flips to `expired`; otherwise it stays `pending`. Idempotent and safe to
         call concurrently. Rate-limited.
       operationId: getInvoiceStatus
+      security:
+        - ApiKeyHeader: []
       parameters:
         - $ref: '#/components/parameters/InvoiceId'
       responses:
@@ -113,6 +122,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Invoice' }
+        '401':
+          description: Missing or invalid API key (when one is configured)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '404':
           description: Not found
           content:
@@ -129,6 +143,8 @@ paths:
       tags: [invoices]
       summary: QR PNG of the payment deeplink
       operationId: getInvoiceQR
+      security:
+        - ApiKeyHeader: []
       parameters:
         - $ref: '#/components/parameters/InvoiceId'
         - name: size

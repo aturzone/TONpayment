@@ -37,6 +37,13 @@ func main() {
 		st = p
 		log.Printf("store: postgres")
 	} else {
+		// The JSON file store is single-node and non-durable (whole-file rewrite,
+		// no cross-instance unique-(pay_to,memo) guarantee). A payment ledger in
+		// prod needs Postgres; require it unless the operator knowingly opts in to
+		// the file store (single instance + a persistent volume).
+		if cfg.IsProd() && os.Getenv("TON_ALLOW_FILE_STORE") != "1" {
+			log.Fatalf("config: prod needs a durable ledger — set TON_DATABASE_URL (Postgres). The JSON file store is single-node and non-durable; to use it deliberately (one instance, persistent volume) set TON_ALLOW_FILE_STORE=1.")
+		}
 		mem, err := store.NewMemory(cfg.DataDir)
 		if err != nil {
 			log.Fatalf("store init: %v", err)
