@@ -187,6 +187,31 @@ func TestMultiTenantFlow(t *testing.T) {
 		t.Fatalf("cross-tenant read: code=%d, want 404 (body=%s)", rec.Code, rec.Body.String())
 	}
 
+	// donation link: the second merchant creates a donation-kind link, and the
+	// public donate endpoint mints a tip invoice for it.
+	donSlug := "t-tips-" + randHex(t)
+	if rec := req(srv, "POST", "/v1/gateways", token2, "", `{"kind":"donation","slug":"`+donSlug+`","displayName":"Tip Jar","contact":{"email":"x@y.z"}}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create donation link: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// public link view exposes kind but never contact (PII)
+	rec = req(srv, "GET", "/v1/link/"+donSlug, "", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("public link: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var lv map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &lv)
+	if lv["kind"] != "donation" || lv["contact"] != nil {
+		t.Fatalf("public link view wrong (leaks contact?): %s", rec.Body.String())
+	}
+	// public donate mints a tip invoice
+	if rec := req(srv, "POST", "/v1/donate/"+donSlug, "", "", `{"amountNano":500000000}`); rec.Code != http.StatusCreated || jsonField(t, rec, "id") == "" {
+		t.Fatalf("donate: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// donating to a payment-kind slug is 404 (not a donation link)
+	if rec := req(srv, "POST", "/v1/donate/"+slug, "", "", `{"amountNano":1000000}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("donate to payment slug: code=%d, want 404", rec.Code)
+	}
+
 	// session-protected route rejects a missing token
 	if rec := req(srv, "GET", "/v1/me", "", "", ""); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("no session: code=%d, want 401", rec.Code)

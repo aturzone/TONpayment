@@ -106,7 +106,8 @@ func testMerchants(t *testing.T, ctx context.Context, pg *Postgres) {
 func testGateways(t *testing.T, ctx context.Context, pg *Postgres) {
 	g := Gateway{
 		ID: "t-gw-1", MerchantID: "t-mer-1", Slug: "t-shop", DisplayName: "Test Shop",
-		Branding: map[string]any{"primary": "#0098ea", "theme": "dark"},
+		Branding:         map[string]any{"primary": "#0098ea", "theme": "dark"},
+		Contact:          map[string]any{"email": "a@b.co"},
 		ReceivingAddress: "tW-merchant-1", Active: true,
 	}
 	if err := pg.CreateGateway(ctx, g); err != nil {
@@ -118,6 +119,9 @@ func testGateways(t *testing.T, ctx context.Context, pg *Postgres) {
 	}
 	if got.Slug != "t-shop" || got.Branding["primary"] != "#0098ea" || got.Branding["theme"] != "dark" {
 		t.Fatalf("gateway branding round-trip wrong: %+v", got)
+	}
+	if got.Kind != ProductPayment || got.Contact["email"] != "a@b.co" {
+		t.Fatalf("gateway kind/contact round-trip wrong: %+v", got)
 	}
 	bySlug, ok, err := pg.GetGatewayBySlug(ctx, "t-shop")
 	if err != nil || !ok || bySlug.ID != "t-gw-1" {

@@ -136,25 +136,31 @@ func (p *Postgres) SetMerchantStatus(ctx context.Context, id, status string) err
 
 func scanGateway(s scanner) (Gateway, error) {
 	var g Gateway
-	var branding []byte
-	if err := s.Scan(&g.ID, &g.MerchantID, &g.Slug, &g.DisplayName, &branding, &g.ReceivingAddress, &g.Active, &g.CreatedAt); err != nil {
+	var branding, contact []byte
+	if err := s.Scan(&g.ID, &g.MerchantID, &g.Kind, &g.Slug, &g.DisplayName, &branding, &contact, &g.ReceivingAddress, &g.Active, &g.CreatedAt); err != nil {
 		return Gateway{}, err
 	}
 	if len(branding) > 0 {
 		_ = json.Unmarshal(branding, &g.Branding)
 	}
+	if len(contact) > 0 {
+		_ = json.Unmarshal(contact, &g.Contact)
+	}
 	return g, nil
 }
 
-const gatewayCols = `id,merchant_id,slug,display_name,branding,receiving_address,active,created_at`
+const gatewayCols = `id,merchant_id,kind,slug,display_name,branding,contact,receiving_address,active,created_at`
 
 func (p *Postgres) CreateGateway(ctx context.Context, g Gateway) error {
 	ctx, cancel := p.bctx(ctx)
 	defer cancel()
+	if g.Kind == "" {
+		g.Kind = ProductPayment
+	}
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO gateways (id,merchant_id,slug,display_name,branding,receiving_address,active,created_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		g.ID, g.MerchantID, g.Slug, g.DisplayName, jsonbObj(g.Branding), g.ReceivingAddress, g.Active, orNow(g.CreatedAt))
+		`INSERT INTO gateways (id,merchant_id,kind,slug,display_name,branding,contact,receiving_address,active,created_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		g.ID, g.MerchantID, g.Kind, g.Slug, g.DisplayName, jsonbObj(g.Branding), jsonbObj(g.Contact), g.ReceivingAddress, g.Active, orNow(g.CreatedAt))
 	return err
 }
 
@@ -205,8 +211,8 @@ func (p *Postgres) UpdateGateway(ctx context.Context, g Gateway) error {
 	ctx, cancel := p.bctx(ctx)
 	defer cancel()
 	_, err := p.pool.Exec(ctx,
-		`UPDATE gateways SET display_name=$2, branding=$3, active=$4 WHERE id=$1`,
-		g.ID, g.DisplayName, jsonbObj(g.Branding), g.Active)
+		`UPDATE gateways SET display_name=$2, branding=$3, active=$4, contact=$5 WHERE id=$1`,
+		g.ID, g.DisplayName, jsonbObj(g.Branding), g.Active, jsonbObj(g.Contact))
 	return err
 }
 

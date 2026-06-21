@@ -37,23 +37,30 @@ var (
 	ErrSlugEmpty = errors.New("a gateway slug is required")
 )
 
-// CreateGatewayInput carries the fields for a new gateway.
+// CreateGatewayInput carries the fields for a new link (donation or payment).
 type CreateGatewayInput struct {
 	MerchantID       string
+	Kind             string // "donation" | "payment"; defaults to payment
 	Slug             string
 	DisplayName      string
 	Branding         map[string]any
+	Contact          map[string]any // PII for payment links (email, name); unverified
 	ReceivingAddress string
 }
 
-// CreateGateway claims the receiving wallet (cross-product uniqueness) then creates
-// the gateway. A wallet already used by a donation link or another gateway is
-// rejected with store.ErrWalletTaken (-> 409). If the gateway insert fails the
-// wallet claim is rolled back, so a failed create never leaves an orphan claim.
+// CreateGateway claims the receiving wallet for its product (donation XOR payment —
+// a wallet hosts at most one) then creates the link. A wallet already used by the
+// other product, or another link, is rejected with store.ErrWalletTaken (-> 409).
+// If the insert fails the wallet claim is rolled back, so a failed create never
+// leaves an orphan claim.
 func (s *Service) CreateGateway(ctx context.Context, in CreateGatewayInput) (store.Gateway, error) {
 	addr, err := tonaddr.Canonical(in.ReceivingAddress, s.testnet)
 	if err != nil {
 		return store.Gateway{}, fmt.Errorf("receivingAddress: %w", err)
+	}
+	kind := store.ProductPayment
+	if in.Kind == store.ProductDonation {
+		kind = store.ProductDonation
 	}
 	slug := NormalizeSlug(in.Slug)
 	if slug == "" {
@@ -66,16 +73,18 @@ func (s *Service) CreateGateway(ctx context.Context, in CreateGatewayInput) (sto
 	} else if ok {
 		return store.Gateway{}, ErrSlugTaken
 	}
-	// Claim the wallet for the payment product before creating the gateway.
-	if err := s.store.ClaimWallet(ctx, store.WalletOwner{Address: addr, Product: store.ProductPayment, OwnerID: in.MerchantID}); err != nil {
+	// Claim the wallet for this product before creating the link.
+	if err := s.store.ClaimWallet(ctx, store.WalletOwner{Address: addr, Product: kind, OwnerID: in.MerchantID}); err != nil {
 		return store.Gateway{}, err // ErrWalletTaken bubbles to a 409
 	}
 	g := store.Gateway{
 		ID:               idgen.New("gw"),
 		MerchantID:       in.MerchantID,
+		Kind:             kind,
 		Slug:             slug,
 		DisplayName:      in.DisplayName,
 		Branding:         in.Branding,
+		Contact:          in.Contact,
 		ReceivingAddress: addr,
 		Active:           true,
 		CreatedAt:        time.Now().UTC(),

@@ -18,9 +18,11 @@ import (
 // mtRoutes registers the multi-tenant control plane + public checkout endpoints.
 // Called only when multi-tenant mode is enabled (Services.AuthSvc != nil).
 func (a *api) mtRoutes(mux *http.ServeMux) {
-	// Public (no auth): the hosted checkout page reads these.
+	// Public (no auth): the hosted checkout + public link pages read these.
 	mux.Handle("GET /v1/fee", a.limiter.wrap(http.HandlerFunc(a.getFee)))
 	mux.Handle("GET /v1/checkout/{id}", a.limiter.wrap(http.HandlerFunc(a.checkout)))
+	mux.Handle("GET /v1/link/{slug}", a.limiter.wrap(http.HandlerFunc(a.publicLink)))
+	mux.Handle("POST /v1/donate/{slug}", a.limiter.wrap(http.HandlerFunc(a.donate)))
 
 	// ton_proof sign-in.
 	mux.Handle("POST /v1/auth/challenge", a.limiter.wrap(http.HandlerFunc(a.authChallenge)))
@@ -145,9 +147,11 @@ func (a *api) me(w http.ResponseWriter, r *http.Request, claims auth.Claims) {
 
 func (a *api) createGateway(w http.ResponseWriter, r *http.Request, claims auth.Claims) {
 	var in struct {
+		Kind             string         `json:"kind"`
 		Slug             string         `json:"slug"`
 		DisplayName      string         `json:"displayName"`
 		Branding         map[string]any `json:"branding"`
+		Contact          map[string]any `json:"contact"`
 		ReceivingAddress string         `json:"receivingAddress"`
 	}
 	if err := decodeJSON(r, &in); err != nil {
@@ -161,9 +165,11 @@ func (a *api) createGateway(w http.ResponseWriter, r *http.Request, claims auth.
 	}
 	g, err := a.s.TenantSvc.CreateGateway(r.Context(), tenant.CreateGatewayInput{
 		MerchantID:       claims.MerchantID,
+		Kind:             in.Kind,
 		Slug:             in.Slug,
 		DisplayName:      in.DisplayName,
 		Branding:         in.Branding,
+		Contact:          in.Contact,
 		ReceivingAddress: addr,
 	})
 	if err != nil {
@@ -379,13 +385,70 @@ func (a *api) checkout(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{"invoice": a.invoiceView(inv)}
 	if inv.GatewayID != "" {
 		if g, ok, _ := a.s.Tenant.GetGateway(r.Context(), inv.GatewayID); ok {
-			resp["gateway"] = map[string]any{"slug": g.Slug, "displayName": g.DisplayName, "branding": g.Branding}
+			resp["gateway"] = publicGatewayView(g)
 		}
 	}
 	if cfg, err := a.s.Tenant.GetPlatformConfig(r.Context()); err == nil {
 		resp["fee"] = map[string]any{"feeBps": cfg.FeeBps, "feeWallet": cfg.FeeWallet}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// publicGatewayView is the public-safe projection of a link: display + branding +
+// kind only. It deliberately omits Contact (PII) and never appears behind a
+// non-public route's response either.
+func publicGatewayView(g store.Gateway) map[string]any {
+	return map[string]any{
+		"slug":        g.Slug,
+		"displayName": g.DisplayName,
+		"branding":    g.Branding,
+		"kind":        g.Kind,
+		"active":      g.Active,
+	}
+}
+
+// publicLink returns a link's public view by slug, for its public page (donation
+// tipping page or a payment gateway's landing). No auth, no PII.
+func (a *api) publicLink(w http.ResponseWriter, r *http.Request) {
+	g, ok, err := a.s.Tenant.GetGatewayBySlug(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, publicGatewayView(g))
+}
+
+// donate creates a tip invoice for a donation link (public, rate-limited, bounded
+// by the engine's pending caps) so donations are invoice-tracked and fee'd exactly
+// like payments. Only donation-kind, active links accept it.
+func (a *api) donate(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		AmountNano int64             `json:"amountNano"`
+		Metadata   map[string]string `json:"metadata"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	g, ok, err := a.s.Tenant.GetGatewayBySlug(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !ok || g.Kind != store.ProductDonation || !g.Active {
+		writeError(w, http.StatusNotFound, "donation link not found")
+		return
+	}
+	inv, err := a.s.Service.CreateInvoiceForGateway(g, in.AmountNano, 0, in.Metadata)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, a.invoiceView(inv))
 }
 
 func randSecret() string {

@@ -45,16 +45,21 @@ const (
 	MerchantSuspended = "suspended"
 )
 
-// Gateway is one payment endpoint belonging to a merchant. ReceivingAddress is
-// where funds land (non-custodial — the platform never holds them). Branding is an
-// opaque blob the private web app owns the meaning of (logo, banner, colors, …);
-// the engine only stores and serves it.
+// Gateway is one payment/donation link belonging to a merchant. Kind is the link
+// type (ProductDonation | ProductPayment) and matches the wallet_ownership product
+// for ReceivingAddress, so a wallet hosts EITHER a donation link OR a payment
+// gateway, never both. ReceivingAddress is where funds land (non-custodial — the
+// platform never holds them). Branding is an opaque blob the web app owns the
+// meaning of (logo, banner, colors, …). Contact is optional PII (email, name)
+// collected for payment links — unverified, stored, and NEVER returned publicly.
 type Gateway struct {
 	ID               string         `json:"id"`
 	MerchantID       string         `json:"merchantId"`
+	Kind             string         `json:"kind"` // ProductDonation | ProductPayment
 	Slug             string         `json:"slug"`
 	DisplayName      string         `json:"displayName"`
 	Branding         map[string]any `json:"branding"`
+	Contact          map[string]any `json:"contact,omitempty"`
 	ReceivingAddress string         `json:"receivingAddress"`
 	Active           bool           `json:"active"`
 	CreatedAt        time.Time      `json:"createdAt"`

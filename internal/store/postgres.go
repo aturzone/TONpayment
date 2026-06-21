@@ -131,13 +131,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS merchants_wallet ON merchants(wallet);
 CREATE TABLE IF NOT EXISTS gateways (
   id                text PRIMARY KEY,
   merchant_id       text NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+  kind              text NOT NULL DEFAULT 'payment',  -- 'donation' | 'payment'
   slug              text NOT NULL,
   display_name      text NOT NULL DEFAULT '',
   branding          jsonb NOT NULL DEFAULT '{}',
+  contact           jsonb NOT NULL DEFAULT '{}',      -- PII for payment links; never public
   receiving_address text NOT NULL,
   active            boolean NOT NULL DEFAULT true,
   created_at        timestamptz NOT NULL DEFAULT now()
 );
+-- Evolve gateways created before the donation/payment unification.
+ALTER TABLE gateways ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'payment';
+ALTER TABLE gateways ADD COLUMN IF NOT EXISTS contact jsonb NOT NULL DEFAULT '{}';
 CREATE UNIQUE INDEX IF NOT EXISTS gateways_slug ON gateways(slug);
 CREATE INDEX IF NOT EXISTS gateways_merchant ON gateways(merchant_id);
 
