@@ -14,6 +14,33 @@ func TestCRC16CheckValue(t *testing.T) {
 	}
 }
 
+// TestNormalizeOnNetwork pins the mainnet/testnet guard: a user-friendly address
+// must match the target network; raw "<wc>:<hex>" is network-agnostic.
+func TestNormalizeOnNetwork(t *testing.T) {
+	var a Address // workchain 0, zero hash
+	mainnet := a.Friendly(false)
+	a.Testnet = true
+	testnet := a.Friendly(false)
+	raw := "0:" + strings.Repeat("00", 32)
+
+	mustOK := func(s string, wantTestnet bool) {
+		if _, err := NormalizeOnNetwork(s, wantTestnet); err != nil {
+			t.Fatalf("NormalizeOnNetwork(%q, %v) = %v, want ok", s, wantTestnet, err)
+		}
+	}
+	mustErr := func(s string, wantTestnet bool) {
+		if _, err := NormalizeOnNetwork(s, wantTestnet); err == nil {
+			t.Fatalf("NormalizeOnNetwork(%q, %v) = nil, want network mismatch error", s, wantTestnet)
+		}
+	}
+	mustOK(mainnet, false)
+	mustOK(testnet, true)
+	mustErr(testnet, false)
+	mustErr(mainnet, true)
+	mustOK(raw, false) // raw accepted on either network
+	mustOK(raw, true)
+}
+
 func TestFriendlyRoundTrip(t *testing.T) {
 	var a Address
 	for i := range a.Hash {

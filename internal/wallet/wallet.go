@@ -24,7 +24,11 @@ type Verifier interface {
 // receiving address and amount.
 func NewMemo() string {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
+	// The memo is the per-invoice security primitive; never emit a weak/zero one.
+	// crypto/rand failing means system entropy is broken — fail loud.
+	if _, err := rand.Read(b); err != nil {
+		panic("tonpayment: crypto/rand failed generating memo: " + err.Error())
+	}
 	return "TON-" + hex.EncodeToString(b)
 }
 

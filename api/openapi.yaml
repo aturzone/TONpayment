@@ -153,6 +153,11 @@ paths:
           schema: { type: integer, minimum: 64, maximum: 1024, default: 256 }
           description: PNG size in pixels (clamped to 64..1024).
       responses:
+        '401':
+          description: Missing or invalid API key (when one is configured)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '200':
           description: OK
           content:

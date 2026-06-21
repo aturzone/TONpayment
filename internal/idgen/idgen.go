@@ -10,6 +10,10 @@ import (
 // entropy, ample to avoid collisions for invoice IDs.
 func New(prefix string) string {
 	b := make([]byte, 9)
-	_, _ = rand.Read(b)
+	// IDs must be unguessable; a crypto/rand failure means broken entropy — fail
+	// loud rather than emitting a predictable/zero id.
+	if _, err := rand.Read(b); err != nil {
+		panic("idgen: crypto/rand failed: " + err.Error())
+	}
 	return prefix + "_" + base64.RawURLEncoding.EncodeToString(b)
 }

@@ -52,6 +52,23 @@ by the store), this can only ever cause a **missed** match (the invoice stays
 `pending`), never a wrong or duplicate credit. Mitigate by polling frequently
 and/or using a dedicated receiving address per integration.
 
+## Payment semantics & caveats
+
+- A payment is matched by the **(receiving address, memo, amount)** triple,
+  fail-closed, and settled exactly once. `paid` means a matching incoming message
+  carrying the memo with `value ≥ amount` landed on the receiving address.
+- Use a receiving address that **accepts and keeps** a plain transfer with a text
+  comment — a normal wallet, or a non-bouncing contract. A bounceable contract
+  that rejects the transfer can show an incoming message yet not net-receive the
+  funds; prefer non-bounceable (`UQ`) receiving addresses.
+- **Split / partial payments are not summed** — a single transfer must meet the
+  amount. Overpayment settles; underpayment stays pending.
+- The address must match the configured network (`TON_NETWORK`, default
+  `mainnet`); a wrong-network `payTo` is rejected at create time.
+- `GET /v1/invoices/{id}/status` runs an on-demand verify. It is idempotent and
+  reflects on-chain truth (it cannot fabricate a payment), and is gated by the API
+  key when one is configured — so it is safe against cross-site / crawler triggers.
+
 ## Webhooks
 
 Webhook delivery is **best-effort** (retried with backoff) and can be lost if the

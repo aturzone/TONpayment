@@ -71,6 +71,29 @@ func Normalize(s string) (string, error) {
 	return a.String(), nil
 }
 
+// NormalizeOnNetwork is Normalize plus a network check: it rejects a user-friendly
+// address whose testnet tag disagrees with wantTestnet, so a wrong-network payTo
+// fails loudly at the boundary instead of silently never settling (the verifier
+// would query the wrong network and match nothing). Raw "<wc>:<hex>" addresses
+// carry no network tag and are accepted on either network.
+func NormalizeOnNetwork(s string, wantTestnet bool) (string, error) {
+	a, err := Parse(s)
+	if err != nil {
+		return "", err
+	}
+	if !strings.Contains(s, ":") && a.Testnet != wantTestnet {
+		return "", fmt.Errorf("address is a %s address, but this service targets %s", netName(a.Testnet), netName(wantTestnet))
+	}
+	return a.String(), nil
+}
+
+func netName(testnet bool) string {
+	if testnet {
+		return "testnet"
+	}
+	return "mainnet"
+}
+
 func parseRaw(wcStr, hexStr string) (Address, error) {
 	wc, err := strconv.ParseInt(wcStr, 10, 32)
 	if err != nil {

@@ -15,8 +15,11 @@
 *.out
 coverage.*
 
-# Local security audit trail (keep private)
+# MASTER CLAUDE tooling + local audit/map output (keep out of the public repo)
 /.security/
+/.sentinel/
+/.master-claude/
+/.claude/
 
 # Editor / OS
 .DS_Store

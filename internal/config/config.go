@@ -27,6 +27,7 @@ type Config struct {
 	TONReceiving string
 	TONAPIBase   string
 	TONAPIKey    string
+	Network      string // "mainnet" (default) or "testnet" — rejects wrong-network payTo
 
 	// Invoicing.
 	DefaultTTL   time.Duration
@@ -49,6 +50,9 @@ type Config struct {
 
 func (c *Config) IsProd() bool { return c.Env == "prod" || c.Env == "production" }
 
+// IsTestnet reports whether the service targets TON testnet (default: mainnet).
+func (c *Config) IsTestnet() bool { return strings.EqualFold(c.Network, "testnet") }
+
 // Load reads configuration from the environment, applying sensible defaults.
 func Load() *Config {
 	c := &Config{
@@ -60,6 +64,7 @@ func Load() *Config {
 		TONReceiving:      os.Getenv("TON_RECEIVING_ADDRESS"),
 		TONAPIBase:        getenv("TON_API_BASE", "https://toncenter.com/api/v2"),
 		TONAPIKey:         os.Getenv("TON_API_KEY"),
+		Network:           getenv("TON_NETWORK", "mainnet"),
 		DefaultTTL:        time.Duration(atoiDef(os.Getenv("TON_DEFAULT_TTL_SECONDS"), 900)) * time.Second,
 		CreateAPIKey:      os.Getenv("TON_CREATE_API_KEY"),
 		MaxTTL:            time.Duration(atoiDef(os.Getenv("TON_MAX_TTL_SECONDS"), 86400)) * time.Second,

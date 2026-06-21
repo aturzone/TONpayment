@@ -144,3 +144,62 @@ func TestHealthz(t *testing.T) {
 		t.Fatalf("code = %d", rec.Code)
 	}
 }
+
+// TestReadsRequireAPIKeyWhenConfigured locks in that an invoice id is not an
+// authorization: with a key set, every read (get/status/qr) is gated (S-0001/S-0003).
+func TestReadsRequireAPIKeyWhenConfigured(t *testing.T) {
+	st, err := store.NewMemory("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := service.New(st, paidVerifier{}, "UQpay", 15*time.Minute, nil)
+	srv := NewServer(Services{Cfg: &config.Config{Env: "dev", CreateAPIKey: "secret"}, Service: svc})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/invoices", strings.NewReader(`{"amountNano":1000000000}`))
+	req.Header.Set("X-API-Key", "secret")
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: code = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := created["id"].(string)
+	if id == "" {
+		t.Fatal("no id in create response")
+	}
+
+	for _, path := range []string{"/v1/invoices/" + id, "/v1/invoices/" + id + "/status", "/v1/invoices/" + id + "/qr"} {
+		r := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(r, httptest.NewRequest(http.MethodGet, path, nil))
+		if r.Code != http.StatusUnauthorized {
+			t.Fatalf("GET %s without key: code = %d, want 401", path, r.Code)
+		}
+		r2 := httptest.NewRecorder()
+		req2 := httptest.NewRequest(http.MethodGet, path, nil)
+		req2.Header.Set("X-API-Key", "secret")
+		srv.Handler.ServeHTTP(r2, req2)
+		if r2.Code != http.StatusOK {
+			t.Fatalf("GET %s with key: code = %d, want 200", path, r2.Code)
+		}
+	}
+}
+
+// TestRejectsUnknownAndTrailingJSON locks in strict body parsing for the money
+// API: unknown fields, trailing junk, and multi-object bodies are 400 (S-0005).
+func TestRejectsUnknownAndTrailingJSON(t *testing.T) {
+	srv := newTestServer(t)
+	for _, body := range []string{
+		`{"amountNano":1000000000,"bogus":"x"}`,
+		`{"amountNano":1000000000} trailing`,
+		`{"amountNano":1000000000}{"amountNano":2}`,
+	} {
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/invoices", strings.NewReader(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %q: code = %d, want 400", body, rec.Code)
+		}
+	}
+}

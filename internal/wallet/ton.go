@@ -104,11 +104,13 @@ func (v *TonVerifier) Verify(inv store.Invoice) (bool, string, error) {
 		if tx.Utime > 0 && !inv.CreatedAt.IsZero() && tx.Utime < inv.CreatedAt.Add(-time.Hour).Unix() {
 			continue
 		}
-		// Defense in depth: the query is already scoped to inv.PayTo, but if the
-		// destination parses and is a *different* account, skip it. If it doesn't parse,
-		// trust the query scope rather than risk rejecting a real payment (fail closed).
+		// Defense in depth: the query is already scoped to inv.PayTo, but verify the
+		// destination ourselves too. Fail closed: a present destination must parse
+		// AND match our account — a different account OR an unparseable one is not
+		// credited. (An absent destination falls back to toncenter's query scope.)
 		if wantErr == nil && tx.InMsg.Destination != "" {
-			if got, err := tonaddr.Parse(tx.InMsg.Destination); err == nil && got.Raw() != want.Raw() {
+			got, err := tonaddr.Parse(tx.InMsg.Destination)
+			if err != nil || got.Raw() != want.Raw() {
 				continue
 			}
 		}

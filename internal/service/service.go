@@ -44,8 +44,13 @@ type Service struct {
 	maxPending        int // global cap on pending invoices; 0 = unlimited
 	maxPendingPerAddr int // per-address cap on pending invoices; 0 = unlimited
 	webhook           Webhook
+	testnet           bool
 	locks             keyedLocks
 }
+
+// SetNetwork sets whether payTo addresses must be testnet (default: mainnet).
+// A per-request payTo whose network tag disagrees is rejected at create time.
+func (s *Service) SetNetwork(testnet bool) { s.testnet = testnet }
 
 // New builds the service. defaultPayTo is the fallback receiving address used when
 // a create request omits payTo (it may be empty — then every request must supply
@@ -106,7 +111,7 @@ func (s *Service) CreateInvoice(payTo string, amountNano int64, ttl time.Duratio
 	// canonicalize it here; the default was already validated at startup.
 	addr := s.defaultPayTo
 	if payTo != "" {
-		norm, err := tonaddr.Normalize(payTo)
+		norm, err := tonaddr.NormalizeOnNetwork(payTo, s.testnet)
 		if err != nil {
 			return store.Invoice{}, fmt.Errorf("payTo: %w", err)
 		}

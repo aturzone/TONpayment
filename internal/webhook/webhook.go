@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -39,7 +40,14 @@ func New(url, secret string, client *http.Client) *Sender {
 		return nil
 	}
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		// Don't follow redirects on outbound delivery — a redirect could send the
+		// signed invoice payload to an unintended (e.g. internal) host (SSRF).
+		client = &http.Client{
+			Timeout: 10 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return errors.New("webhook: redirects are not followed")
+			},
+		}
 	}
 	return &Sender{url: url, secret: []byte(secret), http: client, retries: 5, sem: make(chan struct{}, 32)}
 }

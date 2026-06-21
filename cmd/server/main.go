@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -57,7 +58,7 @@ func main() {
 	// invoice stuck pending (the verifier fails closed). Fail fast in prod; in dev the
 	// mock verifier ignores the address, so only warn.
 	if cfg.TONReceiving != "" {
-		norm, err := tonaddr.Normalize(cfg.TONReceiving)
+		norm, err := tonaddr.NormalizeOnNetwork(cfg.TONReceiving, cfg.IsTestnet())
 		if err != nil {
 			if cfg.IsProd() {
 				log.Fatalf("config: TON_RECEIVING_ADDRESS %q is not a valid TON address: %v", cfg.TONReceiving, err)
@@ -92,7 +93,20 @@ func main() {
 		log.Printf("payments: no default receiving address — every invoice must supply its own payTo")
 	}
 
-	// Optional signed webhook on settlement.
+	// Optional signed webhook on settlement. If configured, require a signing
+	// secret (so deliveries are always signed) and https in prod (no cleartext
+	// invoice data); the sender additionally refuses to follow redirects.
+	if cfg.WebhookURL != "" {
+		if cfg.WebhookSecret == "" {
+			if cfg.IsProd() {
+				log.Fatalf("config: set TON_WEBHOOK_SECRET when TON_WEBHOOK_URL is set — unsigned webhooks let a receiver be spoofed")
+			}
+			log.Printf("WARNING: TON_WEBHOOK_URL set without TON_WEBHOOK_SECRET; deliveries are UNSIGNED (dev only)")
+		}
+		if cfg.IsProd() && !strings.HasPrefix(strings.ToLower(cfg.WebhookURL), "https://") {
+			log.Fatalf("config: TON_WEBHOOK_URL must be https in prod (got %q) — invoice data must not be sent in cleartext", cfg.WebhookURL)
+		}
+	}
 	sender := webhook.New(cfg.WebhookURL, cfg.WebhookSecret, nil)
 	var wh service.Webhook
 	if sender != nil {
@@ -102,7 +116,8 @@ func main() {
 
 	svc := service.New(st, ver, cfg.TONReceiving, cfg.DefaultTTL, wh)
 	svc.SetLimits(cfg.MaxTTL, cfg.MaxPending, cfg.MaxPendingPerAddr)
-	log.Printf("limits: maxTTL=%s maxPending=%d maxPendingPerAddress=%d (0 = unlimited)", cfg.MaxTTL, cfg.MaxPending, cfg.MaxPendingPerAddr)
+	svc.SetNetwork(cfg.IsTestnet())
+	log.Printf("limits: maxTTL=%s maxPending=%d maxPendingPerAddress=%d (0 = unlimited); network=%s", cfg.MaxTTL, cfg.MaxPending, cfg.MaxPendingPerAddr, cfg.Network)
 	srv := httpx.NewServer(httpx.Services{Cfg: cfg, Service: svc})
 
 	// Background poller settles/expires pending invoices so callers needn't poll.

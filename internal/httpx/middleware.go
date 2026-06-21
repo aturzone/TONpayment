@@ -35,7 +35,9 @@ func logger(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		log.Printf("%s %s %d %s", r.Method, r.URL.Path, rec.status, time.Since(start).Round(time.Millisecond))
+		// %q the request path: it is attacker-controlled, so quoting escapes any
+		// CR/LF/ANSI and prevents log forging / line injection (CWE-117).
+		log.Printf("%s %q %d %s", r.Method, r.URL.Path, rec.status, time.Since(start).Round(time.Millisecond))
 	})
 }
 
