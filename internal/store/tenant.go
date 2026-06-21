@@ -113,6 +113,16 @@ type PlatformConfig struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+// Asset is a small uploaded image (a link's logo) stored on our own server in
+// Postgres and served at /v1/asset/{id}. Size is bounded by the upload handler.
+type Asset struct {
+	ID          string
+	MerchantID  string
+	ContentType string
+	Bytes       []byte
+	CreatedAt   time.Time
+}
+
 // TenantStore is the persistence contract for the multi-tenant control plane.
 // Implementations must be safe for concurrent use. Every method takes a context so
 // callers (HTTP handlers) can bound latency; implementations additionally cap each
@@ -163,6 +173,10 @@ type TenantStore interface {
 	// --- platform config (configurable fee) ---
 	GetPlatformConfig(ctx context.Context) (PlatformConfig, error)
 	SetPlatformConfig(ctx context.Context, feeBps int, feeWallet string) error
+
+	// --- assets (uploaded link images) ---
+	CreateAsset(ctx context.Context, a Asset) error
+	GetAsset(ctx context.Context, id string) (Asset, bool, error)
 
 	// --- audit + ton_proof challenges ---
 	AppendAudit(ctx context.Context, actor, action, target string, meta map[string]any) error

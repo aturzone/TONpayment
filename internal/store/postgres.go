@@ -201,6 +201,16 @@ CREATE TABLE IF NOT EXISTS platform_config (
 );
 INSERT INTO platform_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
+-- Uploaded link images (logos), kept on our own server. Bounded in size by the
+-- upload handler; served public at /v1/asset/{id}.
+CREATE TABLE IF NOT EXISTS assets (
+  id           text PRIMARY KEY,
+  merchant_id  text NOT NULL,
+  content_type text NOT NULL,
+  bytes        bytea NOT NULL,
+  created_at   timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS admin_audit (
   id         bigserial PRIMARY KEY,
   actor      text NOT NULL,

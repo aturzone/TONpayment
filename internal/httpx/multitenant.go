@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ func (a *api) mtRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /v1/checkout/{id}", a.limiter.wrap(http.HandlerFunc(a.checkout)))
 	mux.Handle("GET /v1/link/{slug}", a.limiter.wrap(http.HandlerFunc(a.publicLink)))
 	mux.Handle("POST /v1/donate/{slug}", a.limiter.wrap(http.HandlerFunc(a.donate)))
+	mux.Handle("GET /v1/asset/{id}", a.limiter.wrap(http.HandlerFunc(a.getAsset)))
 
 	// ton_proof sign-in.
 	mux.Handle("POST /v1/auth/challenge", a.limiter.wrap(http.HandlerFunc(a.authChallenge)))
@@ -41,6 +43,7 @@ func (a *api) mtRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /v1/keys", a.session(a.listKeys))
 	mux.Handle("DELETE /v1/keys/{id}", a.session(a.revokeKey))
 	mux.Handle("GET /v1/invoices", a.session(a.listInvoices))
+	mux.Handle("POST /v1/assets", a.session(a.uploadAsset))
 }
 
 // session wraps a control-plane handler so it requires a valid merchant session
@@ -453,6 +456,67 @@ func (a *api) donate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, a.invoiceView(inv))
+}
+
+// maxImageBytes bounds an uploaded link image.
+const maxImageBytes = 256 * 1024
+
+// Raster only — SVG is excluded deliberately (a stored SVG could carry script and
+// run in our origin if opened directly).
+var allowedImageTypes = map[string]bool{
+	"image/png":  true,
+	"image/jpeg": true,
+	"image/webp": true,
+	"image/gif":  true,
+}
+
+// uploadAsset stores a small link image on our own server (Postgres) and returns
+// its URL. The body is the raw image; Content-Type must be a supported raster type
+// and the size is capped.
+func (a *api) uploadAsset(w http.ResponseWriter, r *http.Request, claims auth.Claims) {
+	ct := r.Header.Get("Content-Type")
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = strings.TrimSpace(ct[:i])
+	}
+	if !allowedImageTypes[ct] {
+		writeError(w, http.StatusUnsupportedMediaType, "image must be PNG, JPEG, WebP or GIF")
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxImageBytes))
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "image too large (max 256 KB)")
+		return
+	}
+	if len(body) == 0 {
+		writeError(w, http.StatusBadRequest, "empty image")
+		return
+	}
+	id := idgen.New("img")
+	if err := a.s.Tenant.CreateAsset(r.Context(), store.Asset{ID: id, MerchantID: claims.MerchantID, ContentType: ct, Bytes: body}); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"url": "/v1/asset/" + id})
+}
+
+// getAsset serves a stored image (public, long-cached). A restrictive CSP + nosniff
+// neutralizes any active content even though only raster types are accepted.
+func (a *api) getAsset(w http.ResponseWriter, r *http.Request) {
+	as, ok, err := a.s.Tenant.GetAsset(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", as.ContentType)
+	h.Set("Cache-Control", "public, max-age=31536000, immutable")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Content-Security-Policy", "default-src 'none'")
+	_, _ = w.Write(as.Bytes)
 }
 
 func randSecret() string {

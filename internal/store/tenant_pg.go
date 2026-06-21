@@ -443,6 +443,32 @@ func (p *Postgres) SetPlatformConfig(ctx context.Context, feeBps int, feeWallet 
 	return err
 }
 
+// --- assets ---
+
+func (p *Postgres) CreateAsset(ctx context.Context, a Asset) error {
+	ctx, cancel := p.bctx(ctx)
+	defer cancel()
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO assets (id,merchant_id,content_type,bytes,created_at) VALUES ($1,$2,$3,$4,$5)`,
+		a.ID, a.MerchantID, a.ContentType, a.Bytes, orNow(a.CreatedAt))
+	return err
+}
+
+func (p *Postgres) GetAsset(ctx context.Context, id string) (Asset, bool, error) {
+	ctx, cancel := p.bctx(ctx)
+	defer cancel()
+	var a Asset
+	err := p.pool.QueryRow(ctx, `SELECT id,merchant_id,content_type,bytes,created_at FROM assets WHERE id=$1`, id).
+		Scan(&a.ID, &a.MerchantID, &a.ContentType, &a.Bytes, &a.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Asset{}, false, nil
+		}
+		return Asset{}, false, err
+	}
+	return a, true, nil
+}
+
 // --- audit + challenges ---
 
 func (p *Postgres) AppendAudit(ctx context.Context, actor, action, target string, meta map[string]any) error {
