@@ -26,6 +26,12 @@ fail-closed verifier, the claim-once settlement).
 > (matching the GitHub repo). If you fork it under a different name, change the
 > first line of [`go.mod`](go.mod) and run `go mod tidy`.
 
+## Live demo
+
+See TON payments in action in **TONcoffee**, the non-custodial donations app
+built in this project: **[toncoffee.masterclaude.shop](https://toncoffee.masterclaude.shop)**.
+Connect a TON wallet and open a creator's link to try a real on-chain tip.
+
 ## Why non-custodial matters
 
 TONpayment **never has private keys, never signs, and never moves money.** The
