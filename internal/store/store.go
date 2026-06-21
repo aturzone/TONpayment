@@ -41,6 +41,14 @@ type Invoice struct {
 	CreatedAt  time.Time         `json:"createdAt"`
 	PaidAt     time.Time         `json:"paidAt,omitempty"`
 	ExpiresAt  time.Time         `json:"expiresAt,omitempty"`
+
+	// MerchantID and GatewayID scope an invoice to a tenant in multi-tenant mode.
+	// They are empty in single-tenant (OSS) mode, where omitempty keeps the JSON
+	// byte-identical to before tenancy existed. The Postgres columns are nullable
+	// for the same reason; the in-memory store serializes the whole struct, so it
+	// carries them with no code change.
+	MerchantID string `json:"merchantId,omitempty"`
+	GatewayID  string `json:"gatewayId,omitempty"`
 }
 
 // Store is the persistence contract. Implementations must be safe for concurrent
