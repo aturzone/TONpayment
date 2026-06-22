@@ -5,6 +5,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -211,6 +212,65 @@ func validateMetadata(md map[string]string) error {
 // ListPending exposes the store's pending set for the background poller.
 func (s *Service) ListPending() []store.Invoice { return s.st.ListPending() }
 
+// CheckPending re-verifies every pending invoice for the background poller,
+// batching upstream reads by receiving address: invoices that share a PayTo (all of
+// a merchant's invoices land on its one wallet) are resolved with a single network
+// round-trip via a BatchVerifier, turning O(invoices) toncenter calls per tick into
+// O(distinct addresses). concurrency bounds how many addresses are in flight; the
+// verifier's own rate limiter caps the actual upstream QPS, so concurrency only
+// overlaps local settle work. A verifier that is not batch-capable (the dev mock)
+// is polled per invoice. ctx cancellation stops the sweep promptly.
+func (s *Service) CheckPending(ctx context.Context, concurrency int) {
+	pending := s.st.ListPending()
+	if len(pending) == 0 {
+		return
+	}
+	byAddr := map[string][]store.Invoice{}
+	order := make([]string, 0)
+	for _, inv := range pending {
+		if _, seen := byAddr[inv.PayTo]; !seen {
+			order = append(order, inv.PayTo)
+		}
+		byAddr[inv.PayTo] = append(byAddr[inv.PayTo], inv)
+	}
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for _, addr := range order {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(addr string, invs []store.Invoice) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			s.checkAddress(ctx, addr, invs)
+		}(addr, byAddr[addr])
+	}
+	wg.Wait()
+}
+
+// checkAddress verifies every invoice on one receiving address with a single
+// upstream read (or per-invoice if the verifier isn't batch-capable) and applies
+// each verdict.
+func (s *Service) checkAddress(ctx context.Context, addr string, invs []store.Invoice) {
+	if bv, ok := s.verifier.(wallet.BatchVerifier); ok {
+		for _, r := range bv.VerifyAddress(ctx, addr, invs) {
+			_, _ = s.apply(r.Invoice, r.Paid, r.TxHash, r.Err)
+		}
+		return
+	}
+	for _, inv := range invs {
+		paid, tx, err := s.verifier.Verify(inv)
+		_, _ = s.apply(inv, paid, tx, err)
+	}
+}
+
 // CheckStatus verifies payment on-chain (or via the mock) and settles if paid.
 // Payment takes priority over expiry: an invoice that was actually paid settles
 // even if we only notice slightly past its TTL; an unpaid invoice past its TTL
@@ -225,21 +285,30 @@ func (s *Service) CheckStatus(id string) (store.Invoice, error) {
 	}
 
 	paid, tx, err := s.verifier.Verify(inv) // network read — outside the lock
-	if err == nil && paid {
-		// Settle atomically per invoice; re-read under the lock so a concurrent poll
-		// that already settled this invoice cannot make us settle (and webhook) twice.
+	return s.apply(inv, paid, tx, err)
+}
+
+// apply turns a verify verdict into a state transition, shared by the on-demand
+// CheckStatus path and the batched poller path so both settle identically. A paid
+// invoice settles exactly once (re-read under the per-invoice lock; the store's
+// atomic claim is the real guard); an unpaid invoice past its TTL expires;
+// otherwise it stays pending. A verifier error is treated as "not paid" — fail
+// closed.
+func (s *Service) apply(inv store.Invoice, paid bool, tx string, verr error) (store.Invoice, error) {
+	if verr == nil && paid {
+		// Re-read under the lock so a concurrent poll that already settled this invoice
+		// cannot make us settle (and webhook) twice.
 		unlock := s.locks.lock(inv.ID)
 		defer unlock()
-		inv, ok = s.st.GetInvoice(id)
+		cur, ok := s.st.GetInvoice(inv.ID)
 		if !ok {
 			return store.Invoice{}, errors.New("not found")
 		}
-		if inv.Status != store.StatusPending {
-			return inv, nil
+		if cur.Status != store.StatusPending {
+			return cur, nil
 		}
-		return s.settle(inv, tx)
+		return s.settle(cur, tx)
 	}
-
 	// Not paid (or a verifier error): expire if the TTL has passed.
 	if !inv.ExpiresAt.IsZero() && time.Now().After(inv.ExpiresAt) {
 		return s.expire(inv)

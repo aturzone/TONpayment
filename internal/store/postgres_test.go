@@ -15,7 +15,7 @@ func TestPostgresRoundTrip(t *testing.T) {
 		t.Skip("set TON_TEST_DATABASE_URL to run the Postgres integration test")
 	}
 	ctx := context.Background()
-	pg, err := NewPostgres(ctx, url)
+	pg, err := NewPostgres(ctx, url, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,7 +16,7 @@ func openTestPG(t *testing.T) *Postgres {
 	if url == "" {
 		t.Skip("set TON_TEST_DATABASE_URL to run the Postgres integration test")
 	}
-	pg, err := NewPostgres(context.Background(), url)
+	pg, err := NewPostgres(context.Background(), url, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

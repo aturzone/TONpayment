@@ -15,6 +15,7 @@ import (
 	"github.com/aturzone/TONpayment/internal/idgen"
 	"github.com/aturzone/TONpayment/internal/store"
 	"github.com/aturzone/TONpayment/internal/tenant"
+	"github.com/aturzone/TONpayment/internal/webhook"
 )
 
 // mtRoutes registers the multi-tenant control plane + public checkout endpoints.
@@ -267,8 +268,10 @@ func (a *api) createWebhook(w http.ResponseWriter, r *http.Request, claims auth.
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if !strings.HasPrefix(strings.ToLower(in.URL), "https://") && !strings.HasPrefix(strings.ToLower(in.URL), "http://") {
-		writeError(w, http.StatusBadRequest, "url must be http(s)")
+	// Reject internal/loopback/private targets up front (delivery additionally refuses
+	// to dial non-public IPs, defeating DNS rebinding). Require https in production.
+	if err := webhook.ValidateURL(in.URL, a.s.Cfg.IsProd()); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	secret := in.Secret
@@ -458,8 +461,12 @@ func (a *api) donate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, a.invoiceView(inv))
 }
 
-// maxImageBytes bounds an uploaded link image.
-const maxImageBytes = 256 * 1024
+// maxImageBytes bounds an uploaded link image; maxAssetsPerMerchant bounds how many
+// a single merchant may store (uploaded bytes live in the ledger Postgres).
+const (
+	maxImageBytes        = 256 * 1024
+	maxAssetsPerMerchant = 20
+)
 
 // Raster only — SVG is excluded deliberately (a stored SVG could carry script and
 // run in our origin if opened directly).
@@ -489,6 +496,26 @@ func (a *api) uploadAsset(w http.ResponseWriter, r *http.Request, claims auth.Cl
 	}
 	if len(body) == 0 {
 		writeError(w, http.StatusBadRequest, "empty image")
+		return
+	}
+	// Trust the bytes, not the header: a declared type that doesn't actually sniff as
+	// an allowed raster image is rejected, and we store the SNIFFED type so a disguised
+	// payload can never be served back under an attacker-chosen content-type.
+	sniff := http.DetectContentType(body)
+	if i := strings.IndexByte(sniff, ';'); i >= 0 {
+		sniff = strings.TrimSpace(sniff[:i])
+	}
+	if !allowedImageTypes[sniff] {
+		writeError(w, http.StatusUnsupportedMediaType, "file content is not a supported image (PNG, JPEG, WebP or GIF)")
+		return
+	}
+	ct = sniff
+	// Bound how many images this merchant may keep in the ledger DB.
+	if n, err := a.s.Tenant.CountAssetsByMerchant(r.Context(), claims.MerchantID); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	} else if n >= maxAssetsPerMerchant {
+		writeError(w, http.StatusConflict, "image limit reached; reuse or remove an existing image")
 		return
 	}
 	id := idgen.New("img")

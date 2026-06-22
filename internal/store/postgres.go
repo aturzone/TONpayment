@@ -25,9 +25,27 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-// NewPostgres connects, verifies the connection, and applies the schema.
-func NewPostgres(ctx context.Context, url string) (*Postgres, error) {
-	pool, err := pgxpool.New(ctx, url)
+// NewPostgres connects, verifies the connection, and applies the schema. maxConns
+// caps the pool: pgx defaults to max(4, NumCPU), which starves request handlers and
+// the poller under concurrent load on small hosts; 0 keeps that default.
+func NewPostgres(ctx context.Context, url string, maxConns int) (*Postgres, error) {
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, err
+	}
+	if maxConns > 0 {
+		cfg.MaxConns = int32(maxConns)
+	}
+	// Keep a couple of connections warm and recycle them on a bounded lifetime so a
+	// long-running process never accumulates stale or leaked server-side state.
+	cfg.MinConns = 2
+	if cfg.MaxConns < cfg.MinConns {
+		cfg.MinConns = cfg.MaxConns
+	}
+	cfg.MaxConnLifetime = time.Hour
+	cfg.MaxConnIdleTime = 30 * time.Minute
+	cfg.MaxConnLifetimeJitter = 5 * time.Minute
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -44,6 +62,13 @@ func NewPostgres(ctx context.Context, url string) (*Postgres, error) {
 }
 
 func (p *Postgres) Close() { p.pool.Close() }
+
+// Ping verifies the database is reachable, for readiness checks (GET /readyz).
+func (p *Postgres) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }
+
+// Stat exposes connection-pool statistics (in-use vs idle conns, acquire waits)
+// for the metrics endpoint, so pool saturation is observable under load.
+func (p *Postgres) Stat() *pgxpool.Stat { return p.pool.Stat() }
 
 // MigrateTenant applies the multi-tenant control-plane schema (tenantSchemaSQL).
 // It is idempotent and is called from main() only when multi-tenant mode is on, so

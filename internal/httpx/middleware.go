@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"log"
@@ -11,12 +12,19 @@ import (
 	"time"
 )
 
+type ctxKey int
+
+const reqIDKey ctxKey = iota
+
 func requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b := make([]byte, 8)
 		_, _ = rand.Read(b)
-		w.Header().Set("X-Request-Id", hex.EncodeToString(b))
-		next.ServeHTTP(w, r)
+		id := hex.EncodeToString(b)
+		w.Header().Set("X-Request-Id", id)
+		// Stash it in the context too, so the access log can stamp every line with the
+		// same id the client sees — making a request traceable end-to-end under load.
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), reqIDKey, id)))
 	})
 }
 
@@ -35,9 +43,10 @@ func logger(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
+		id, _ := r.Context().Value(reqIDKey).(string)
 		// %q the request path: it is attacker-controlled, so quoting escapes any
 		// CR/LF/ANSI and prevents log forging / line injection (CWE-117).
-		log.Printf("%s %q %d %s", r.Method, r.URL.Path, rec.status, time.Since(start).Round(time.Millisecond))
+		log.Printf("%s %q %d %s req=%s", r.Method, r.URL.Path, rec.status, time.Since(start).Round(time.Millisecond), id)
 	})
 }
 

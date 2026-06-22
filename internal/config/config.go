@@ -62,6 +62,16 @@ type Config struct {
 	// everything" (today's behavior).
 	PollerShardIndex int
 	PollerShardCount int
+
+	// TONCenterRPS is the even-paced upstream read budget (requests/second) shared by
+	// the poller and on-demand status checks, so a backlog of pending invoices can
+	// never burst past toncenter's rate limit and trigger 429s. Free toncenter is
+	// ~1 rps; raise it (e.g. 10) once TON_API_KEY is set. 0 disables client pacing.
+	TONCenterRPS float64
+
+	// DBMaxConns caps the Postgres connection pool. 0 keeps the pgx default
+	// (max(4, NumCPU)), which starves handlers under concurrent load on small hosts.
+	DBMaxConns int
 }
 
 // IsMultitenant reports whether the hosted multi-tenant platform is enabled.
@@ -100,6 +110,8 @@ func Load() *Config {
 		RedisURL:          os.Getenv("TON_REDIS_URL"),
 		PollerShardIndex:  atoiDef(os.Getenv("TON_POLLER_SHARD_INDEX"), 0),
 		PollerShardCount:  atoiDef(os.Getenv("TON_POLLER_SHARD_COUNT"), 1),
+		TONCenterRPS:      floatDef(os.Getenv("TON_TONCENTER_RPS"), 1.0),
+		DBMaxConns:        atoiDef(os.Getenv("TON_DB_MAX_CONNS"), 10),
 	}
 	c.AllowedOrigins = splitTrim(getenv("TON_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:4173"))
 	c.AuthDomains = splitTrim(os.Getenv("TON_AUTH_DOMAINS"))
@@ -139,6 +151,16 @@ func atoiDef(s string, def int) int {
 	}
 	if n, err := strconv.Atoi(s); err == nil {
 		return n
+	}
+	return def
+}
+
+func floatDef(s string, def float64) float64 {
+	if s == "" {
+		return def
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return f
 	}
 	return def
 }

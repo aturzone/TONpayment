@@ -18,6 +18,10 @@ type Services struct {
 	Cfg     *config.Config
 	Service *service.Service
 
+	// DB, when backed by Postgres, powers readiness (GET /readyz) and pool metrics
+	// (GET /metrics). Nil for the in-memory store — readiness then just reports up.
+	DB *store.Postgres
+
 	// Multi-tenant (all nil/zero in single-tenant mode):
 	Auth          auth.Authenticator // data-plane authenticator; defaults to SingleKeyAuth
 	AuthSvc       *auth.Service      // ton_proof sign-in (challenge/verify)
@@ -64,6 +68,11 @@ func NewServer(s Services) *http.Server {
 
 func (a *api) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", a.healthz)
+	// Liveness vs readiness: /healthz says the process is up; /readyz also checks the
+	// database, so an orchestrator/proxy can stop routing to an instance whose DB is
+	// down. /metrics exposes pool + pending depth, gated by the admin token.
+	mux.HandleFunc("GET /readyz", a.readyz)
+	mux.HandleFunc("GET /metrics", a.metrics)
 
 	// Every /v1/invoices endpoint shares the same auth gate: an invoice ID is an
 	// unguessable token, not an authorization, so reads are gated too — no

@@ -5,11 +5,11 @@ package webhook
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -40,16 +40,11 @@ func New(url, secret string, client *http.Client) *Sender {
 		return nil
 	}
 	if client == nil {
-		// Don't follow redirects on outbound delivery — a redirect could send the
-		// signed invoice payload to an unintended (e.g. internal) host (SSRF).
-		client = &http.Client{
-			Timeout: 10 * time.Second,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return errors.New("webhook: redirects are not followed")
-			},
-		}
+		// Trusted-URL default: refuse redirects only. The multi-tenant router passes a
+		// SecureClient explicitly for untrusted merchant URLs (adds the private-IP block).
+		client = redirectSafeClient(10 * time.Second)
 	}
-	return &Sender{url: url, secret: []byte(secret), http: client, retries: 5, sem: make(chan struct{}, 32)}
+	return &Sender{url: url, secret: []byte(secret), http: client, retries: 4, sem: make(chan struct{}, 32)}
 }
 
 // Fire delivers the invoice asynchronously. Safe to call on a hot path and safe
@@ -61,7 +56,7 @@ func (s *Sender) Fire(inv store.Invoice) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		s.deliver(inv)
+		s.deliverCtx(context.Background(), inv)
 	}()
 }
 
@@ -72,11 +67,25 @@ func (s *Sender) DeliverSync(inv store.Invoice) bool {
 	if s == nil {
 		return false
 	}
-	return s.deliver(inv)
+	return s.deliverCtx(context.Background(), inv)
 }
 
-func (s *Sender) deliver(inv store.Invoice) bool {
-	s.sem <- struct{}{} // cap concurrent outbound deliveries
+// DeliverSyncContext is DeliverSync bounded by ctx: the retry backoff and every HTTP
+// attempt stop the moment ctx is done. A fan-out passes a deadline so one slow or
+// black-holing endpoint can't tie up a delivery slot indefinitely.
+func (s *Sender) DeliverSyncContext(ctx context.Context, inv store.Invoice) bool {
+	if s == nil {
+		return false
+	}
+	return s.deliverCtx(ctx, inv)
+}
+
+func (s *Sender) deliverCtx(ctx context.Context, inv store.Invoice) bool {
+	select {
+	case s.sem <- struct{}{}: // cap concurrent outbound deliveries
+	case <-ctx.Done():
+		return false
+	}
 	defer func() { <-s.sem }()
 
 	body, err := json.Marshal(inv)
@@ -93,15 +102,19 @@ func (s *Sender) deliver(inv store.Invoice) bool {
 
 	backoff := 500 * time.Millisecond
 	for attempt := 1; attempt <= s.retries; attempt++ {
-		err = s.attempt(body, sig)
+		err = s.attempt(ctx, body, sig)
 		if err == nil {
 			return true // delivered
 		}
 		log.Printf("webhook: invoice %s attempt %d/%d failed: %v", inv.ID, attempt, s.retries, err)
 		if attempt < s.retries {
-			time.Sleep(backoff)
-			if backoff *= 2; backoff > 30*time.Second {
-				backoff = 30 * time.Second
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return false
+			}
+			if backoff *= 2; backoff > 8*time.Second {
+				backoff = 8 * time.Second
 			}
 		}
 	}
@@ -109,8 +122,8 @@ func (s *Sender) deliver(inv store.Invoice) bool {
 	return false
 }
 
-func (s *Sender) attempt(body []byte, sig string) error {
-	req, err := http.NewRequest(http.MethodPost, s.url, bytes.NewReader(body))
+func (s *Sender) attempt(ctx context.Context, body []byte, sig string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

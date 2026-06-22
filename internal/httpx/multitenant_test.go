@@ -33,7 +33,7 @@ func newMTServer(t *testing.T) (*http.Server, *store.Postgres) {
 	if url == "" {
 		t.Skip("set TON_TEST_DATABASE_URL to run the multi-tenant HTTP test")
 	}
-	pg, err := store.NewPostgres(context.Background(), url)
+	pg, err := store.NewPostgres(context.Background(), url, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

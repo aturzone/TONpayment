@@ -35,7 +35,7 @@ func main() {
 	var st store.Store
 	var pg *store.Postgres
 	if cfg.DatabaseURL != "" {
-		p, err := store.NewPostgres(context.Background(), cfg.DatabaseURL)
+		p, err := store.NewPostgres(context.Background(), cfg.DatabaseURL, cfg.DBMaxConns)
 		if err != nil {
 			log.Fatalf("postgres init: %v", err)
 		}
@@ -84,8 +84,10 @@ func main() {
 	// mock so the create -> pending -> paid flow can be exercised without real funds.
 	var ver wallet.Verifier
 	if cfg.IsProd() {
-		ver = wallet.NewTonVerifier(cfg.TONAPIBase, cfg.TONAPIKey, nil)
-		log.Printf("payments: toncenter verifier (%s)", cfg.TONAPIBase)
+		tv := wallet.NewTonVerifier(cfg.TONAPIBase, cfg.TONAPIKey, nil)
+		tv.SetRateLimit(cfg.TONCenterRPS) // pace upstream reads so a backlog can't trip 429
+		ver = tv
+		log.Printf("payments: toncenter verifier (%s, %.3g req/s budget)", cfg.TONAPIBase, cfg.TONCenterRPS)
 	} else {
 		ver = wallet.NewMockVerifier(2)
 		log.Printf("payments: MOCK verifier (dev; auto-confirms after 2 polls — NEVER used in prod)")
@@ -125,7 +127,7 @@ func main() {
 	// Assemble HTTP services. Multi-tenant adds ton_proof sign-in, the control plane,
 	// per-merchant data-plane auth, and scoped reads; single-tenant leaves these
 	// nil (NewServer defaults to the single-key gate — exactly today's behavior).
-	svcs := httpx.Services{Cfg: cfg, Service: svc}
+	svcs := httpx.Services{Cfg: cfg, Service: svc, DB: pg} // pg is nil for the in-memory store
 	if cfg.Multitenant {
 		resolver := wallet.NewPubKeyClient(cfg.TONAPIBase, cfg.TONAPIKey, nil)
 		domains := map[string]bool{}

@@ -4,6 +4,7 @@
 package wallet
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"sync"
@@ -14,6 +15,31 @@ import (
 // Verifier reports whether an invoice has been paid on-chain.
 type Verifier interface {
 	Verify(inv store.Invoice) (paid bool, txHash string, err error)
+}
+
+// AddrResult is the outcome of verifying one invoice during a batched, per-address
+// poll. It pairs the input invoice with its verdict so the caller can settle the
+// paid ones.
+type AddrResult struct {
+	Invoice store.Invoice
+	Paid    bool
+	TxHash  string
+	Err     error
+}
+
+// BatchVerifier, if implemented by a Verifier, resolves many invoices that share a
+// single receiving address with ONE upstream read instead of one per invoice. The
+// poller groups its pending set by PayTo and calls this, turning O(invoices)
+// toncenter requests per tick into O(distinct addresses) — the difference between
+// confirming payments under load and being rate-limited into a stall. A Verifier
+// that does not implement it is simply polled per-invoice (e.g. the dev mock).
+type BatchVerifier interface {
+	Verifier
+	// VerifyAddress reads payTo's recent transactions once and matches every invoice
+	// in invs against them. ctx bounds the upstream call (and the shared rate budget).
+	// The returned slice has one AddrResult per input invoice. A read error is
+	// reported per-invoice (Err set) so each simply stays pending (fail closed).
+	VerifyAddress(ctx context.Context, payTo string, invs []store.Invoice) []AddrResult
 }
 
 // NewMemo returns a unique payment comment used to match a TON transfer to an

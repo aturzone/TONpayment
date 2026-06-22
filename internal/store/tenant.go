@@ -177,6 +177,9 @@ type TenantStore interface {
 	// --- assets (uploaded link images) ---
 	CreateAsset(ctx context.Context, a Asset) error
 	GetAsset(ctx context.Context, id string) (Asset, bool, error)
+	// CountAssetsByMerchant bounds how many images a single merchant may store in the
+	// ledger DB (uploaded bytes live in Postgres), so one account can't bloat it.
+	CountAssetsByMerchant(ctx context.Context, merchantID string) (int, error)
 
 	// --- audit + ton_proof challenges ---
 	AppendAudit(ctx context.Context, actor, action, target string, meta map[string]any) error

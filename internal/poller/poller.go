@@ -7,11 +7,9 @@ package poller
 import (
 	"context"
 	"log"
-	"sync"
 	"time"
 
 	"github.com/aturzone/TONpayment/internal/service"
-	"github.com/aturzone/TONpayment/internal/store"
 )
 
 type Poller struct {
@@ -46,29 +44,10 @@ func (p *Poller) Run(ctx context.Context) {
 	}
 }
 
-// tick re-checks every pending invoice with bounded concurrency.
+// tick re-checks every pending invoice. The service batches the upstream reads by
+// receiving address and paces them against the toncenter rate budget, so one tick
+// costs O(distinct addresses) requests, not O(pending invoices); concurrency bounds
+// how many addresses are settled in parallel.
 func (p *Poller) tick(ctx context.Context) {
-	pending := p.svc.ListPending()
-	if len(pending) == 0 {
-		return
-	}
-	sem := make(chan struct{}, p.concurrency)
-	var wg sync.WaitGroup
-	for _, inv := range pending {
-		select {
-		case <-ctx.Done():
-			wg.Wait()
-			return
-		case sem <- struct{}{}:
-		}
-		wg.Add(1)
-		go func(inv store.Invoice) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			if _, err := p.svc.CheckStatus(inv.ID); err != nil {
-				log.Printf("poller: invoice %s: %v", inv.ID, err)
-			}
-		}(inv)
-	}
-	wg.Wait()
+	p.svc.CheckPending(ctx, p.concurrency)
 }

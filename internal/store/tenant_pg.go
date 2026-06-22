@@ -454,6 +454,14 @@ func (p *Postgres) CreateAsset(ctx context.Context, a Asset) error {
 	return err
 }
 
+func (p *Postgres) CountAssetsByMerchant(ctx context.Context, merchantID string) (int, error) {
+	ctx, cancel := p.bctx(ctx)
+	defer cancel()
+	var n int
+	err := p.pool.QueryRow(ctx, `SELECT count(*) FROM assets WHERE merchant_id=$1`, merchantID).Scan(&n)
+	return n, err
+}
+
 func (p *Postgres) GetAsset(ctx context.Context, id string) (Asset, bool, error) {
 	ctx, cancel := p.bctx(ctx)
 	defer cancel()
