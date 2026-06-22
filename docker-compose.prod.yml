@@ -19,21 +19,42 @@ services:
       TON_NETWORK: ${TON_NETWORK:-mainnet}
       TON_API_BASE: https://toncenter.com/api/v2
       TON_API_KEY: ${TON_API_KEY:-}
+      # Upstream toncenter read budget (even-paced). Free tier ~1 rps; raise to ~10
+      # once TON_API_KEY is set so the poller confirms a backlog faster.
+      TON_TONCENTER_RPS: ${TON_TONCENTER_RPS:-1}
+      # Postgres pool ceiling (keep <= postgres max_connections below).
+      TON_DB_MAX_CONNS: ${TON_DB_MAX_CONNS:-20}
+      # Bearer token gating GET /metrics (Prometheus). Unset => /metrics disabled.
+      TON_ADMIN_TOKEN: ${TON_ADMIN_TOKEN:-}
       TON_ADMIN_WALLETS: ${TON_ADMIN_WALLETS:-}
       TON_ALLOWED_ORIGINS: ${TON_ALLOWED_ORIGINS:-https://tonpayment.net}
       # Behind Caddy: trust X-Forwarded-For for rate-limit client-IP keying.
       TON_TRUST_PROXY: "true"
+      # Keep the Go heap under the container memory limit so the GC reclaims before
+      # the cgroup OOM-kills us (~80% of mem_limit).
+      GOMEMLIMIT: "400MiB"
     depends_on:
-      - tonpay-postgres
+      tonpay-postgres:
+        condition: service_healthy
     networks:
       - proxy
     expose:
       - "8080"
+    mem_limit: 512m
+    cpus: 1.5
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/readyz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   tonpay-postgres:
     image: postgres:16-alpine
     container_name: tonpay-postgres
     restart: unless-stopped
+    # Our pool tops out at TON_DB_MAX_CONNS; 100 leaves ample headroom for psql/admin.
+    command: ["postgres", "-c", "max_connections=100", "-c", "shared_buffers=128MB"]
     environment:
       POSTGRES_USER: ton
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -42,6 +63,14 @@ services:
       - tonpay_pgdata:/var/lib/postgresql/data
     networks:
       - proxy
+    mem_limit: 512m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ton -d tonpayment"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   tonpay_pgdata:

@@ -1,0 +1,60 @@
+name: Deploy
+
+# Ships the engine to production AFTER the CI workflow passes on main, so only green
+# commits reach the server. Also runnable on demand. The job SSHes to the host,
+# fast-forwards the checkout to the built commit, and rebuilds the compose stack —
+# then waits for /readyz before declaring success.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   DEPLOY_HOST      production host / IP
+#   DEPLOY_PORT      SSH port
+#   DEPLOY_USER      SSH user
+#   DEPLOY_SSH_KEY   private key (PEM) whose public half is in the host authorized_keys
+#
+# One-time server setup (gives `git reset` a remote to track; .env stays untracked):
+#   git clone https://github.com/aturzone/TONpayment /opt/tonpayment
+#   cp /opt/tonpayment/.env.prod.example /opt/tonpayment/.env   # then fill in secrets
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Manual runs deploy as-is; automatic runs only after CI succeeded.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd /opt/tonpayment
+            git fetch --all --prune
+            git reset --hard origin/main
+            docker compose -f docker-compose.prod.yml up -d --build
+            docker image prune -f
+            # Confirm the new container actually became ready before reporting success.
+            for i in $(seq 1 20); do
+              if docker exec tonpay-api wget -qO- http://localhost:8080/readyz >/dev/null 2>&1; then
+                echo "deploy: tonpay-api is ready"
+                exit 0
+              fi
+              sleep 3
+            done
+            echo "deploy: tonpay-api did not become ready in time" >&2
+            docker compose -f docker-compose.prod.yml logs --tail=50 tonpay-api >&2
+            exit 1

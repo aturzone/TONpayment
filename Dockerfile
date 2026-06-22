@@ -19,6 +19,6 @@ ENV TON_HTTP_ADDR=:8080 TON_ENV=prod TON_DATA_DIR=/app/data
 RUN mkdir -p /app/data && chown -R app:app /app
 EXPOSE 8080
 USER app
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
-  CMD wget -qO- http://localhost:8080/healthz >/dev/null 2>&1 || exit 1
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s \
+  CMD wget -qO- http://localhost:8080/readyz >/dev/null 2>&1 || exit 1
 ENTRYPOINT ["/app/server"]

@@ -10,6 +10,8 @@
 .env
 .env.*
 !.env.example
+# Keep the no-secret prod template tracked (the compose file references it).
+!.env.prod.example
 
 # Go tooling output
 *.out
