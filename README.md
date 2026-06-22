@@ -8,7 +8,7 @@ A small, **non-custodial, watch-only** TON payment service in Go. It issues
 invoices, watches the TON blockchain, and confirms payment — without ever
 holding keys or moving funds.
 
-![TONpayment — a non-custodial donation/payment box on TON](docs/landing.png)
+<!-- Screenshot: edit this README on GitHub and drag an image of tonpayment.net right here. -->
 
 - **Create an invoice** → get a unique memo, an amount (in nanoTON), a receiving
   address, a `ton://transfer` deeplink, and a QR code.
