@@ -8,6 +8,8 @@ A small, **non-custodial, watch-only** TON payment service in Go. It issues
 invoices, watches the TON blockchain, and confirms payment — without ever
 holding keys or moving funds.
 
+![TONpayment — a non-custodial donation/payment box on TON](docs/landing.png)
+
 - **Create an invoice** → get a unique memo, an amount (in nanoTON), a receiving
   address, a `ton://transfer` deeplink, and a QR code.
 - **The payer pays** from any TON wallet (TON Connect, deeplink, or manual
@@ -28,9 +30,9 @@ fail-closed verifier, the claim-once settlement).
 
 ## Live demo
 
-See TON payments in action in **TONcoffee**, the non-custodial donations app
-built in this project: **[coffee.tonpayment.net](https://coffee.tonpayment.net)**.
-Connect a TON wallet and open a creator's link to try a real on-chain tip.
+A hosted gateway built on this engine runs at **[tonpayment.net](https://tonpayment.net)**
+— non-custodial donation links and payment gateways on TON. Try the demo box on the
+home page, or connect a TON wallet to create your own link and take a real on-chain tip.
 
 ## Why non-custodial matters
 
@@ -46,7 +48,7 @@ error leaves the invoice `pending`, never `paid`.
 Requires Go 1.26+.
 
 ```sh
-git clone git@github.com:aturzone/TONpayment.git
+git clone https://github.com/aturzone/TONpayment.git
 cd TONpayment
 
 # A receiving address is needed to create invoices — set a default here, or pass
