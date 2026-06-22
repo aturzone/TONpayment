@@ -28,8 +28,11 @@ concurrency:
 
 jobs:
   deploy:
-    # Manual runs deploy as-is; automatic runs only after CI succeeded.
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # Dormant until you set repo variable DEPLOY_ENABLED=true (after adding the
+    # DEPLOY_* secrets and the one-time server setup), so pushes don't fail red
+    # before the pipeline is wired. Manual runs deploy as-is; automatic runs only
+    # after CI succeeded.
+    if: ${{ vars.DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - name: Deploy over SSH
