@@ -234,3 +234,95 @@ func randHex(t *testing.T) string {
 func nowStr() string {
 	return strconv.FormatInt(time.Now().Unix(), 10)
 }
+
+// TestGatewayUpdateDeleteAndWalletRelease covers the full link-management lifecycle
+// the dashboard now exposes: rename the slug, change the kind in place (which moves
+// the wallet's product claim), reject a colliding slug, block a cross-tenant delete,
+// and — crucially — free the wallet on delete so a new link can take its place.
+func TestGatewayUpdateDeleteAndWalletRelease(t *testing.T) {
+	srv, pg := newMTServer(t)
+	defer pg.Close()
+	_, _, token := makeMerchant(t, pg)
+
+	slug := "life-" + randHex(t)
+	rec := req(srv, "POST", "/v1/gateways", token, "", `{"kind":"donation","slug":"`+slug+`","displayName":"My Tips"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	gid := jsonField(t, rec, "id")
+	recvAddr := jsonField(t, rec, "receivingAddress")
+
+	// rename the slug; the public link moves with it
+	newSlug := "tips-" + randHex(t)
+	if rec := req(srv, "PATCH", "/v1/gateways/"+gid, token, "", `{"slug":"`+newSlug+`"}`); rec.Code != http.StatusOK || jsonField(t, rec, "slug") != newSlug {
+		t.Fatalf("rename: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := req(srv, "GET", "/v1/link/"+newSlug, "", "", ""); rec.Code != http.StatusOK {
+		t.Fatalf("new slug should resolve: %d", rec.Code)
+	}
+	if rec := req(srv, "GET", "/v1/link/"+slug, "", "", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("old slug should 404: %d", rec.Code)
+	}
+
+	// change kind donation -> payment; the wallet's product claim must follow
+	if rec := req(srv, "PATCH", "/v1/gateways/"+gid, token, "", `{"kind":"payment"}`); rec.Code != http.StatusOK || jsonField(t, rec, "kind") != "payment" {
+		t.Fatalf("change kind: %d %s", rec.Code, rec.Body.String())
+	}
+	if owner, ok, err := pg.GetWalletOwner(context.Background(), recvAddr); err != nil || !ok || owner.Product != store.ProductPayment {
+		t.Fatalf("wallet product should be 'payment' after kind change: %+v ok=%v err=%v", owner, ok, err)
+	}
+
+	// a slug already used by another merchant can't be taken
+	_, _, token2 := makeMerchant(t, pg)
+	taken := "taken-" + randHex(t)
+	if rec := req(srv, "POST", "/v1/gateways", token2, "", `{"slug":"`+taken+`","displayName":"Other"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("second merchant create: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := req(srv, "PATCH", "/v1/gateways/"+gid, token, "", `{"slug":"`+taken+`"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("colliding slug should 409: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// a different merchant cannot delete this gateway
+	if rec := req(srv, "DELETE", "/v1/gateways/"+gid, token2, "", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant delete should 404: %d", rec.Code)
+	}
+
+	// delete frees the wallet: the merchant can create a fresh link on it
+	if rec := req(srv, "DELETE", "/v1/gateways/"+gid, token, "", ""); rec.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := req(srv, "GET", "/v1/gateways/"+gid, token, "", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("deleted gateway should 404: %d", rec.Code)
+	}
+	if owner, ok, _ := pg.GetWalletOwner(context.Background(), recvAddr); ok {
+		t.Fatalf("wallet should be released after delete, still owned by %+v", owner)
+	}
+	if rec := req(srv, "POST", "/v1/gateways", token, "", `{"kind":"payment","slug":"again-`+randHex(t)+`","displayName":"Reborn"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("recreate on freed wallet: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestWebhookDelete: a merchant can remove one webhook endpoint from a gateway it owns.
+func TestWebhookDelete(t *testing.T) {
+	srv, pg := newMTServer(t)
+	defer pg.Close()
+	_, _, token := makeMerchant(t, pg)
+	gid := jsonField(t, req(srv, "POST", "/v1/gateways", token, "", `{"slug":"wh-`+randHex(t)+`","displayName":"x"}`), "id")
+
+	rec := req(srv, "POST", "/v1/gateways/"+gid+"/webhooks", token, "", `{"url":"https://example.com/hook"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create webhook: %d %s", rec.Code, rec.Body.String())
+	}
+	whid := jsonField(t, rec, "id")
+	if rec := req(srv, "DELETE", "/v1/gateways/"+gid+"/webhooks/"+whid, token, "", ""); rec.Code != http.StatusOK {
+		t.Fatalf("delete webhook: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = req(srv, "GET", "/v1/gateways/"+gid+"/webhooks", token, "", "")
+	var m struct {
+		Webhooks []any `json:"webhooks"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &m)
+	if len(m.Webhooks) != 0 {
+		t.Fatalf("webhooks should be empty after delete, got %d (body=%s)", len(m.Webhooks), rec.Body.String())
+	}
+}

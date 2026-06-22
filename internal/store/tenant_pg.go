@@ -211,9 +211,34 @@ func (p *Postgres) UpdateGateway(ctx context.Context, g Gateway) error {
 	ctx, cancel := p.bctx(ctx)
 	defer cancel()
 	_, err := p.pool.Exec(ctx,
-		`UPDATE gateways SET display_name=$2, branding=$3, active=$4, contact=$5 WHERE id=$1`,
-		g.ID, g.DisplayName, jsonbObj(g.Branding), g.Active, jsonbObj(g.Contact))
+		`UPDATE gateways SET slug=$2, kind=$3, display_name=$4, branding=$5, active=$6, contact=$7 WHERE id=$1`,
+		g.ID, g.Slug, g.Kind, g.DisplayName, jsonbObj(g.Branding), g.Active, jsonbObj(g.Contact))
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" { // slug unique-index violation
+		return ErrSlugTaken
+	}
 	return err
+}
+
+// DeleteGateway removes the link and frees its wallet in one transaction. Deleting
+// the gateway cascades its webhook_endpoints (FK ON DELETE CASCADE); webhook_deliveries
+// have no FK so they remain as orphaned history. Invoices keep their gateway_id (a
+// plain column), so the merchant's payment history is preserved.
+func (p *Postgres) DeleteGateway(ctx context.Context, id, address, ownerID string) error {
+	ctx, cancel := p.bctx(ctx)
+	defer cancel()
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `DELETE FROM gateways WHERE id=$1`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM wallet_ownership WHERE address=$1 AND owner_id=$2`, address, ownerID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // --- api keys ---
@@ -334,6 +359,13 @@ func (p *Postgres) ListActiveWebhookEndpoints(ctx context.Context, gatewayID str
 	return p.listWebhookEndpoints(ctx, gatewayID, true)
 }
 
+func (p *Postgres) DeleteWebhookEndpoint(ctx context.Context, id, gatewayID string) error {
+	ctx, cancel := p.bctx(ctx)
+	defer cancel()
+	_, err := p.pool.Exec(ctx, `DELETE FROM webhook_endpoints WHERE id=$1 AND gateway_id=$2`, id, gatewayID)
+	return err
+}
+
 func (p *Postgres) RecordWebhookDelivery(ctx context.Context, invoiceID, endpointID string, attempt, statusCode int, ok bool) error {
 	ctx, cancel := p.bctx(ctx)
 	defer cancel()
@@ -416,6 +448,13 @@ func (p *Postgres) ReleaseWallet(ctx context.Context, address, ownerID string) e
 	ctx, cancel := p.bctx(ctx)
 	defer cancel()
 	_, err := p.pool.Exec(ctx, `DELETE FROM wallet_ownership WHERE address=$1 AND owner_id=$2`, address, ownerID)
+	return err
+}
+
+func (p *Postgres) SetWalletProduct(ctx context.Context, address, ownerID, product string) error {
+	ctx, cancel := p.bctx(ctx)
+	defer cancel()
+	_, err := p.pool.Exec(ctx, `UPDATE wallet_ownership SET product=$3 WHERE address=$1 AND owner_id=$2`, address, ownerID, product)
 	return err
 }
 

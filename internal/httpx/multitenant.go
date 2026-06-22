@@ -38,8 +38,10 @@ func (a *api) mtRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /v1/gateways", a.session(a.listGateways))
 	mux.Handle("GET /v1/gateways/{id}", a.session(a.getGateway))
 	mux.Handle("PATCH /v1/gateways/{id}", a.session(a.updateGateway))
+	mux.Handle("DELETE /v1/gateways/{id}", a.session(a.deleteGateway))
 	mux.Handle("POST /v1/gateways/{id}/webhooks", a.session(a.createWebhook))
 	mux.Handle("GET /v1/gateways/{id}/webhooks", a.session(a.listWebhooks))
+	mux.Handle("DELETE /v1/gateways/{id}/webhooks/{whid}", a.session(a.deleteWebhook))
 	mux.Handle("POST /v1/keys", a.session(a.createKey))
 	mux.Handle("GET /v1/keys", a.session(a.listKeys))
 	mux.Handle("DELETE /v1/keys/{id}", a.session(a.revokeKey))
@@ -230,28 +232,53 @@ func (a *api) updateGateway(w http.ResponseWriter, r *http.Request, claims auth.
 		return
 	}
 	var in struct {
+		Slug        *string        `json:"slug"`
+		Kind        *string        `json:"kind"`
 		DisplayName *string        `json:"displayName"`
 		Branding    map[string]any `json:"branding"`
+		Contact     map[string]any `json:"contact"`
 		Active      *bool          `json:"active"`
 	}
 	if err := decodeJSON(r, &in); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if in.DisplayName != nil {
-		g.DisplayName = *in.DisplayName
+	updated, err := a.s.TenantSvc.UpdateGateway(r.Context(), g, tenant.UpdateGatewayPatch{
+		Slug:        in.Slug,
+		Kind:        in.Kind,
+		DisplayName: in.DisplayName,
+		Branding:    in.Branding,
+		Contact:     in.Contact,
+		Active:      in.Active,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, tenant.ErrSlugTaken):
+			writeError(w, http.StatusConflict, "that gateway slug is taken")
+		case errors.Is(err, tenant.ErrSlugEmpty):
+			writeError(w, http.StatusBadRequest, "a gateway slug is required")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
+		return
 	}
-	if in.Branding != nil {
-		g.Branding = in.Branding
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// deleteGateway removes a link and frees its receiving wallet (so the merchant can
+// create a new link, of either kind, on the same wallet). Webhook endpoints cascade;
+// historical invoices are preserved.
+func (a *api) deleteGateway(w http.ResponseWriter, r *http.Request, claims auth.Claims) {
+	g, ok := a.ownedGateway(r, r.PathValue("id"), claims.MerchantID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "gateway not found")
+		return
 	}
-	if in.Active != nil {
-		g.Active = *in.Active
-	}
-	if err := a.s.Tenant.UpdateGateway(r.Context(), g); err != nil {
+	if err := a.s.TenantSvc.DeleteGateway(r.Context(), g); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, http.StatusOK, g)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
 func (a *api) createWebhook(w http.ResponseWriter, r *http.Request, claims auth.Claims) {
@@ -299,6 +326,21 @@ func (a *api) listWebhooks(w http.ResponseWriter, r *http.Request, claims auth.C
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"webhooks": eps}) // secrets are json:"-"
+}
+
+// deleteWebhook removes one endpoint from a gateway the session merchant owns. The
+// store scopes the delete to gateway_id, so an id from another gateway no-ops.
+func (a *api) deleteWebhook(w http.ResponseWriter, r *http.Request, claims auth.Claims) {
+	g, ok := a.ownedGateway(r, r.PathValue("id"), claims.MerchantID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "gateway not found")
+		return
+	}
+	if err := a.s.Tenant.DeleteWebhookEndpoint(r.Context(), r.PathValue("whid"), g.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
 func (a *api) createKey(w http.ResponseWriter, r *http.Request, claims auth.Claims) {

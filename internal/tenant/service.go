@@ -33,7 +33,9 @@ func New(ts store.TenantStore, testnet bool) *Service {
 func (s *Service) Store() store.TenantStore { return s.store }
 
 var (
-	ErrSlugTaken = errors.New("gateway slug is already taken")
+	// ErrSlugTaken aliases the store error so a collision from either the pre-check
+	// here or the unique index in the store maps to the same 409.
+	ErrSlugTaken = store.ErrSlugTaken
 	ErrSlugEmpty = errors.New("a gateway slug is required")
 )
 
@@ -94,6 +96,73 @@ func (s *Service) CreateGateway(ctx context.Context, in CreateGatewayInput) (sto
 		return store.Gateway{}, err
 	}
 	return g, nil
+}
+
+// UpdateGatewayPatch carries the optional, mutable fields of a gateway edit; a nil
+// pointer / nil map leaves that field unchanged.
+type UpdateGatewayPatch struct {
+	Slug        *string
+	Kind        *string
+	DisplayName *string
+	Branding    map[string]any
+	Contact     map[string]any
+	Active      *bool
+}
+
+// UpdateGateway applies a patch to an already-loaded, owned gateway: a slug change is
+// normalized and checked for collisions; a kind change moves the wallet's product
+// claim (the wallet still hosts exactly one link, keeping the cross-product registry
+// consistent); display fields are set as given. The receiving wallet is never changed
+// here — delete and re-create to move a link to a different wallet.
+func (s *Service) UpdateGateway(ctx context.Context, g store.Gateway, p UpdateGatewayPatch) (store.Gateway, error) {
+	if p.Slug != nil {
+		slug := NormalizeSlug(*p.Slug)
+		if slug == "" {
+			return store.Gateway{}, ErrSlugEmpty
+		}
+		if slug != g.Slug {
+			if existing, ok, err := s.store.GetGatewayBySlug(ctx, slug); err != nil {
+				return store.Gateway{}, err
+			} else if ok && existing.ID != g.ID {
+				return store.Gateway{}, ErrSlugTaken
+			}
+			g.Slug = slug
+		}
+	}
+	if p.Kind != nil {
+		kind := store.ProductPayment
+		if *p.Kind == store.ProductDonation {
+			kind = store.ProductDonation
+		}
+		if kind != g.Kind {
+			if err := s.store.SetWalletProduct(ctx, g.ReceivingAddress, g.MerchantID, kind); err != nil {
+				return store.Gateway{}, err
+			}
+			g.Kind = kind
+		}
+	}
+	if p.DisplayName != nil {
+		g.DisplayName = *p.DisplayName
+	}
+	if p.Branding != nil {
+		g.Branding = p.Branding
+	}
+	if p.Contact != nil {
+		g.Contact = p.Contact
+	}
+	if p.Active != nil {
+		g.Active = *p.Active
+	}
+	if err := s.store.UpdateGateway(ctx, g); err != nil {
+		return store.Gateway{}, err // a slug race surfaces here as ErrSlugTaken
+	}
+	return g, nil
+}
+
+// DeleteGateway removes a link and frees its wallet, so the merchant can create a new
+// link of either kind on the same wallet.
+func (s *Service) DeleteGateway(ctx context.Context, g store.Gateway) error {
+	return s.store.DeleteGateway(ctx, g.ID, g.ReceivingAddress, g.MerchantID)
 }
 
 // IssuedKey is a freshly created key: the raw secret (shown once) and its record.

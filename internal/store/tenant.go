@@ -30,6 +30,10 @@ const (
 // concrete signal the control plane turns into an HTTP 409.
 var ErrWalletTaken = errors.New("wallet is already registered to a donation link or payment gateway")
 
+// ErrSlugTaken is returned when a gateway slug collides with an existing one (on
+// create or on a slug change). The control plane turns it into an HTTP 409.
+var ErrSlugTaken = errors.New("gateway slug is already taken")
+
 // Merchant is an account, identified by the wallet that proved ownership via
 // ton_proof. A merchant owns gateways and API keys.
 type Merchant struct {
@@ -140,10 +144,16 @@ type TenantStore interface {
 	GetGateway(ctx context.Context, id string) (Gateway, bool, error)
 	GetGatewayBySlug(ctx context.Context, slug string) (Gateway, bool, error)
 	ListGatewaysByMerchant(ctx context.Context, merchantID string) ([]Gateway, error)
-	// UpdateGateway updates the mutable, display-only fields (display_name,
-	// branding, active). The receiving address is immutable after creation because
-	// it is bound to a wallet_ownership claim.
+	// UpdateGateway persists the mutable fields: slug, kind, display_name, branding,
+	// active, contact. The receiving address is immutable after creation because it is
+	// bound to a wallet_ownership claim (to change wallets, delete and re-create). A
+	// slug collision surfaces as ErrSlugTaken.
 	UpdateGateway(ctx context.Context, g Gateway) error
+	// DeleteGateway removes a link and frees its wallet in one transaction: it deletes
+	// the gateway row (cascading its webhook endpoints) and releases the
+	// wallet_ownership claim for address+ownerID, so the wallet can host a new link.
+	// Historical invoices are kept (their gateway_id is a plain column, no FK).
+	DeleteGateway(ctx context.Context, id, address, ownerID string) error
 
 	// --- api keys ---
 	CreateAPIKey(ctx context.Context, k APIKey) error
@@ -157,6 +167,9 @@ type TenantStore interface {
 	CreateWebhookEndpoint(ctx context.Context, e WebhookEndpoint) error
 	ListWebhookEndpoints(ctx context.Context, gatewayID string) ([]WebhookEndpoint, error)
 	ListActiveWebhookEndpoints(ctx context.Context, gatewayID string) ([]WebhookEndpoint, error)
+	// DeleteWebhookEndpoint removes one endpoint, scoped to its gateway so a merchant
+	// can only delete an endpoint on a gateway they own.
+	DeleteWebhookEndpoint(ctx context.Context, id, gatewayID string) error
 	RecordWebhookDelivery(ctx context.Context, invoiceID, endpointID string, attempt, statusCode int, ok bool) error
 
 	// --- tenant-scoped invoice reads (defense-in-depth against cross-tenant access) ---
@@ -169,6 +182,9 @@ type TenantStore interface {
 	// returns ErrWalletTaken (the wallet already belongs to some product).
 	ClaimWallet(ctx context.Context, w WalletOwner) error
 	ReleaseWallet(ctx context.Context, address, ownerID string) error
+	// SetWalletProduct moves an existing claim to a different product (donation <->
+	// payment) when a link changes kind in place — the wallet still hosts exactly one.
+	SetWalletProduct(ctx context.Context, address, ownerID, product string) error
 
 	// --- platform config (configurable fee) ---
 	GetPlatformConfig(ctx context.Context) (PlatformConfig, error)
