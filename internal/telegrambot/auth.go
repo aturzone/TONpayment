@@ -355,16 +355,18 @@ const (
 
 	replyLockedOut = "Too many incorrect codes. Try again later."
 
+	// NB: sent with parse_mode=HTML — literal angle brackets MUST be escaped
+	// or Telegram rejects the whole message ("can't parse entities").
 	replyAdminHelp = "You're the authorized admin (2FA done). Run commands in the admin group:\n" +
 		"/stats — platform snapshot\n" +
 		"/links — recent links\n" +
-		"/link <slug> — one link in detail\n" +
+		"/link &lt;slug&gt; — one link in detail\n" +
 		"/invoices — recent invoices\n" +
 		"/pending — pending backlog\n" +
 		"/health — engine health\n" +
 		"/fee — platform fee\n" +
-		"/disable <slug> <code> — turn a link off (2FA)\n" +
-		"/enable <slug> <code> — turn a link back on (2FA)\n" +
+		"/disable &lt;slug&gt; &lt;code&gt; — turn a link off (2FA)\n" +
+		"/enable &lt;slug&gt; &lt;code&gt; — turn a link back on (2FA)\n" +
 		"/setup — bind this group + create alert topics"
 )
 
