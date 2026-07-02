@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aturzone/TONpayment/internal/auth"
+	"github.com/aturzone/TONpayment/internal/deeplink"
 	"github.com/aturzone/TONpayment/internal/idgen"
 	"github.com/aturzone/TONpayment/internal/store"
 	"github.com/aturzone/TONpayment/internal/tenant"
@@ -24,6 +25,7 @@ func (a *api) mtRoutes(mux *http.ServeMux) {
 	// Public (no auth): the hosted checkout + public link pages read these.
 	mux.Handle("GET /v1/fee", a.limiter.wrap(http.HandlerFunc(a.getFee)))
 	mux.Handle("GET /v1/checkout/{id}", a.limiter.wrap(http.HandlerFunc(a.checkout)))
+	mux.Handle("GET /v1/checkout/{id}/qr", a.limiter.wrap(http.HandlerFunc(a.checkoutQR)))
 	mux.Handle("GET /v1/link/{slug}", a.limiter.wrap(http.HandlerFunc(a.publicLink)))
 	mux.Handle("POST /v1/donate/{slug}", a.limiter.wrap(http.HandlerFunc(a.donate)))
 	mux.Handle("GET /v1/asset/{id}", a.limiter.wrap(http.HandlerFunc(a.getAsset)))
@@ -444,6 +446,27 @@ func (a *api) checkout(w http.ResponseWriter, r *http.Request) {
 		resp["fee"] = map[string]any{"feeBps": cfg.FeeBps, "feeWallet": cfg.FeeWallet}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// checkoutQR renders a checkout invoice's payment deeplink as a QR PNG. Public
+// for the same reason checkout is: the unguessable invoice id IS the capability,
+// and the QR encodes only what checkout already returns (payTo, amount, memo).
+// Optional ?size=<px> (64..1024). Backs the "transfer manually" payment option.
+func (a *api) checkoutQR(w http.ResponseWriter, r *http.Request) {
+	inv, ok := a.s.Service.Get(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	png, err := deeplink.PNG(deeplink.Build(inv.PayTo, inv.AmountNano, inv.Memo), size)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "qr render failed")
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(png)
 }
 
 // publicGatewayView is the public-safe projection of a link: display + branding +

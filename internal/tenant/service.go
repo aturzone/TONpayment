@@ -23,10 +23,23 @@ import (
 type Service struct {
 	store   store.TenantStore
 	testnet bool
+	// notify, when set, receives link-lifecycle events ("created", "updated",
+	// "deleted") for operator telemetry (the Telegram admin bot). Fire-and-
+	// forget: it must never block and its absence changes nothing.
+	notify func(action string, g store.Gateway)
 }
 
 func New(ts store.TenantStore, testnet bool) *Service {
 	return &Service{store: ts, testnet: testnet}
+}
+
+// SetNotify installs the optional link-lifecycle event sink.
+func (s *Service) SetNotify(fn func(action string, g store.Gateway)) { s.notify = fn }
+
+func (s *Service) fireNotify(action string, g store.Gateway) {
+	if s.notify != nil {
+		s.notify(action, g)
+	}
 }
 
 // Store exposes the underlying tenant store for read handlers (lists, lookups).
@@ -95,6 +108,7 @@ func (s *Service) CreateGateway(ctx context.Context, in CreateGatewayInput) (sto
 		_ = s.store.ReleaseWallet(ctx, addr, in.MerchantID) // roll back the claim
 		return store.Gateway{}, err
 	}
+	s.fireNotify("created", g)
 	return g, nil
 }
 
@@ -156,13 +170,18 @@ func (s *Service) UpdateGateway(ctx context.Context, g store.Gateway, p UpdateGa
 	if err := s.store.UpdateGateway(ctx, g); err != nil {
 		return store.Gateway{}, err // a slug race surfaces here as ErrSlugTaken
 	}
+	s.fireNotify("updated", g)
 	return g, nil
 }
 
 // DeleteGateway removes a link and frees its wallet, so the merchant can create a new
 // link of either kind on the same wallet.
 func (s *Service) DeleteGateway(ctx context.Context, g store.Gateway) error {
-	return s.store.DeleteGateway(ctx, g.ID, g.ReceivingAddress, g.MerchantID)
+	if err := s.store.DeleteGateway(ctx, g.ID, g.ReceivingAddress, g.MerchantID); err != nil {
+		return err
+	}
+	s.fireNotify("deleted", g)
+	return nil
 }
 
 // IssuedKey is a freshly created key: the raw secret (shown once) and its record.

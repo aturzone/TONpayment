@@ -28,6 +28,11 @@ services:
       TON_ADMIN_TOKEN: ${TON_ADMIN_TOKEN:-}
       TON_ADMIN_WALLETS: ${TON_ADMIN_WALLETS:-}
       TON_ALLOWED_ORIGINS: ${TON_ALLOWED_ORIGINS:-https://tonpayment.net}
+      # Telegram ADMIN bot (optional). Set both in the server .env to enable;
+      # never set a Telegram webhook on this token (the bot long-polls).
+      TON_TELEGRAM_BOT_TOKEN: ${TON_TELEGRAM_BOT_TOKEN:-}
+      TON_TELEGRAM_ADMIN_PHONES: ${TON_TELEGRAM_ADMIN_PHONES:-}
+      TON_TELEGRAM_CHAT_ID: ${TON_TELEGRAM_CHAT_ID:-}
       # Behind Caddy: trust X-Forwarded-For for rate-limit client-IP keying.
       TON_TRUST_PROXY: "true"
       # Keep the Go heap under the container memory limit so the GC reclaims before

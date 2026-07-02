@@ -19,6 +19,7 @@ import (
 	"github.com/aturzone/TONpayment/internal/poller"
 	"github.com/aturzone/TONpayment/internal/service"
 	"github.com/aturzone/TONpayment/internal/store"
+	"github.com/aturzone/TONpayment/internal/telegrambot"
 	"github.com/aturzone/TONpayment/internal/tenant"
 	"github.com/aturzone/TONpayment/internal/tonaddr"
 	"github.com/aturzone/TONpayment/internal/wallet"
@@ -119,6 +120,31 @@ func main() {
 		wh = router
 	}
 
+	// Optional Telegram ADMIN bot (long-poll; requires Postgres). Its notifier
+	// wraps the settlement sink so every paid invoice also lands in the admin
+	// group's Payments topic — fire-and-forget on top of the real webhooks.
+	var bot *telegrambot.Bot
+	if cfg.TelegramEnabled() {
+		if pg == nil {
+			log.Fatalf("config: TON_TELEGRAM_BOT_TOKEN requires TON_DATABASE_URL (Postgres) for bot state")
+		}
+		if err := pg.MigrateTelegram(context.Background()); err != nil {
+			log.Fatalf("postgres telegram migrate: %v", err)
+		}
+		b, err := telegrambot.New(telegrambot.Config{
+			Token:        cfg.TelegramToken,
+			AdminPhones:  cfg.TelegramAdminPhones,
+			ChatID:       cfg.TelegramChatID,
+			MasterSecret: cfg.SessionSecret,
+		}, pg)
+		if err != nil {
+			log.Fatalf("telegram bot: %v", err)
+		}
+		bot = b
+		wh = &telegrambot.PaymentSink{Next: wh, Notifier: bot.Notifier(), Lookup: pg.GetGateway}
+		log.Printf("telegram: admin bot enabled (%d allow-listed phone(s))", len(cfg.TelegramAdminPhones))
+	}
+
 	svc := service.New(st, ver, cfg.TONReceiving, cfg.DefaultTTL, wh)
 	svc.SetLimits(cfg.MaxTTL, cfg.MaxPending, cfg.MaxPendingPerAddr)
 	svc.SetNetwork(cfg.IsTestnet())
@@ -152,6 +178,10 @@ func main() {
 		svcs.Auth = auth.TenantKeyAuth{Store: pg}
 		svcs.Tenant = pg
 		svcs.TenantSvc = tenant.New(pg, cfg.IsTestnet())
+		if bot != nil {
+			// Link lifecycle events (create/update/delete) → the Links topic.
+			svcs.TenantSvc.SetNotify(bot.Notifier().LinkEvent)
+		}
 		svcs.SessionSecret = []byte(cfg.SessionSecret)
 		log.Printf("auth: ton_proof sign-in (domains=%v, admins=%d)", cfg.AuthDomains, len(adminWallets))
 	}
@@ -161,6 +191,17 @@ func main() {
 	pollCtx, stopPoller := context.WithCancel(context.Background())
 	if cfg.PollEnabled {
 		go poller.New(svc, cfg.PollInterval, cfg.PollConcurrency).Run(pollCtx)
+	}
+
+	// Telegram admin bot main loop (long-poll); stops with the poller context.
+	botDone := make(chan struct{})
+	if bot != nil {
+		go func() {
+			defer close(botDone)
+			bot.Run(pollCtx)
+		}()
+	} else {
+		close(botDone)
 	}
 
 	go func() {
@@ -188,6 +229,7 @@ func main() {
 			router.Wait() // drain per-gateway fan-outs
 		}
 		sender.Wait()
+		<-botDone // bot loop exits with pollCtx; its notifier drains briefly
 		close(drained)
 	}()
 	select {

@@ -4,6 +4,7 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -72,6 +73,23 @@ type Config struct {
 	// DBMaxConns caps the Postgres connection pool. 0 keeps the pgx default
 	// (max(4, NumCPU)), which starves handlers under concurrent load on small hosts.
 	DBMaxConns int
+
+	// Telegram ADMIN bot (optional; requires multi-tenant mode + Postgres).
+	// The bot long-polls getUpdates — never set a Telegram webhook on this
+	// token. Enrollment is allow-listed by phone number; the group is bound
+	// via /setup (or pinned with TelegramChatID). See internal/telegrambot.
+	//
+	// Phone format: international digits, e.g. +989154869715. A 0-leading
+	// 11-digit entry is interpreted as an Iranian national number (0X… → 98X…);
+	// numbers from other countries must be given in international form.
+	TelegramToken       string   // TON_TELEGRAM_BOT_TOKEN; empty = bot off
+	TelegramAdminPhones []string // TON_TELEGRAM_ADMIN_PHONES (comma-separated)
+	TelegramChatID      int64    // TON_TELEGRAM_CHAT_ID (optional pin)
+}
+
+// TelegramEnabled reports whether the admin bot should run.
+func (c *Config) TelegramEnabled() bool {
+	return c.TelegramToken != "" && len(c.TelegramAdminPhones) > 0
 }
 
 // IsMultitenant reports whether the hosted multi-tenant platform is enabled.
@@ -116,7 +134,24 @@ func Load() *Config {
 	c.AllowedOrigins = splitTrim(getenv("TON_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:4173"))
 	c.AuthDomains = splitTrim(os.Getenv("TON_AUTH_DOMAINS"))
 	c.AdminWallets = splitTrim(os.Getenv("TON_ADMIN_WALLETS"))
+	c.TelegramToken = os.Getenv("TON_TELEGRAM_BOT_TOKEN")
+	c.TelegramAdminPhones = splitTrim(os.Getenv("TON_TELEGRAM_ADMIN_PHONES"))
+	c.TelegramChatID = int64Def(os.Getenv("TON_TELEGRAM_CHAT_ID"), 0)
 	return c
+}
+
+// int64Def parses a 64-bit integer env value (Telegram supergroup ids are
+// large negatives like -1001234567890), warning loudly on a malformed value
+// instead of silently zeroing a security-relevant pin.
+func int64Def(s string, def int64) int64 {
+	if s == "" {
+		return def
+	}
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return n
+	}
+	log.Printf("WARNING: ignoring unparsable int64 env value %q", s)
+	return def
 }
 
 func getenv(k, def string) string {

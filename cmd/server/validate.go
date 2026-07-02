@@ -26,6 +26,17 @@ func validate(cfg *config.Config) error {
 			return fmt.Errorf("TON_MULTITENANT=1 requires TON_AUTH_DOMAINS (the allowed ton_proof domain(s), e.g. tonpayment.net)")
 		}
 	}
+	// The Telegram admin bot reads the tenant tables (stats, links, the link
+	// kill switch) and encrypts its TOTP secrets with the session secret, so it
+	// requires the full multi-tenant platform — refuse a half-working setup.
+	if cfg.TelegramEnabled() {
+		if !cfg.Multitenant {
+			return fmt.Errorf("TON_TELEGRAM_BOT_TOKEN requires TON_MULTITENANT=1 (the admin bot reports on tenant data)")
+		}
+	} else if cfg.TelegramToken != "" || len(cfg.TelegramAdminPhones) > 0 {
+		// Exactly one of the pair is set — say so instead of silently running without the bot.
+		return fmt.Errorf("partial Telegram bot config: set BOTH TON_TELEGRAM_BOT_TOKEN and TON_TELEGRAM_ADMIN_PHONES (or neither)")
+	}
 	if !cfg.IsProd() {
 		return nil
 	}
